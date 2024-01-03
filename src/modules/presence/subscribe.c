@@ -38,6 +38,7 @@
 #include "subscribe.h"
 #include "utils_func.h"
 #include "notify.h"
+#include "presence_dmq.h"
 #include "../pua/hash.h"
 #include "../../core/mod_fix.h"
 #include "../../core/dset.h"
@@ -68,6 +69,10 @@ static int send_2XX_reply(sip_msg_t *msg, int reply_code, unsigned int lexpire,
 	str tmp;
 	char *t = NULL;
 
+	if(msg == NULL) {
+		LM_ERR("msg does not exist\n");
+		return 0;
+	}
 	tmp.s = int2str((unsigned long)lexpire, &tmp.len);
 	hdr_append.len =
 			9 + tmp.len + CRLF_LEN + 10 + local_contact->len + 16 + CRLF_LEN;
@@ -176,6 +181,199 @@ int delete_db_subs(str *to_tag, str *from_tag, str *callid)
 
 	return 0;
 }
+
+//int replace_subs_db(subs_t *s)
+//{
+//	db_key_t query_cols[2], update_keys[24];
+//	db_val_t query_vals[2], update_vals[24];
+//	int n_query_cols = 0;
+//	int n_update_cols = 0;
+//	int pres_uri_col, to_user_col, to_domain_col, from_user_col,
+//			from_domain_col, callid_col, totag_col, fromtag_col, event_col,
+//			status_col, event_id_col, local_cseq_col, remote_cseq_col,
+//			expires_col, record_route_col, contact_col, local_contact_col,
+//			version_col, socket_info_col, reason_col, watcher_user_col,
+//			watcher_domain_col, updated_col, updated_winfo_col, user_agent_col,
+//			flags_col;
+//	str sval_empty = str_init("");
+//
+//	if(pa_dbf.use_table(pa_db, &active_watchers_table) < 0) {
+//		LM_ERR("sql use table failed\n");
+//		return -1;
+//	}
+//
+//	query_cols[pres_uri_col = n_query_cols] = &str_presentity_uri_col;
+//	query_vals[pres_uri_col].type = DB1_STR;
+//	query_vals[pres_uri_col].nul = 0;
+//	n_query_cols++;
+//
+//	query_cols[callid_col = n_query_cols] = &str_callid_col;
+//	query_vals[callid_col].type = DB1_STR;
+//	query_vals[callid_col].nul = 0;
+//	n_query_cols++;
+//
+//	update_keys[totag_col = n_update_cols] = &str_to_tag_col;
+//	update_vals[totag_col].type = DB1_STR;
+//	update_vals[totag_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[fromtag_col = n_update_cols] = &str_from_tag_col;
+//	update_vals[fromtag_col].type = DB1_STR;
+//	update_vals[fromtag_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[to_user_col = n_update_cols] = &str_to_user_col;
+//	update_vals[to_user_col].type = DB1_STR;
+//	update_vals[to_user_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[to_domain_col = n_update_cols] = &str_to_domain_col;
+//	update_vals[to_domain_col].type = DB1_STR;
+//	update_vals[to_domain_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[from_user_col = n_update_cols] = &str_from_user_col;
+//	update_vals[from_user_col].type = DB1_STR;
+//	update_vals[from_user_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[from_domain_col = n_update_cols] = &str_from_domain_col;
+//	update_vals[from_domain_col].type = DB1_STR;
+//	update_vals[from_domain_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[watcher_user_col = n_update_cols] = &str_watcher_username_col;
+//	update_vals[watcher_user_col].type = DB1_STR;
+//	update_vals[watcher_user_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[watcher_domain_col = n_update_cols] = &str_watcher_domain_col;
+//	update_vals[watcher_domain_col].type = DB1_STR;
+//	update_vals[watcher_domain_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[event_col = n_update_cols] = &str_event_col;
+//	update_vals[event_col].type = DB1_STR;
+//	update_vals[event_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[event_id_col = n_update_cols] = &str_event_id_col;
+//	update_vals[event_id_col].type = DB1_STR;
+//	update_vals[event_id_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[local_cseq_col = n_update_cols] = &str_local_cseq_col;
+//	update_vals[local_cseq_col].type = DB1_INT;
+//	update_vals[local_cseq_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[remote_cseq_col = n_update_cols] = &str_remote_cseq_col;
+//	update_vals[remote_cseq_col].type = DB1_INT;
+//	update_vals[remote_cseq_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[expires_col = n_update_cols] = &str_expires_col;
+//	update_vals[expires_col].type = DB1_INT;
+//	update_vals[expires_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[status_col = n_update_cols] = &str_status_col;
+//	update_vals[status_col].type = DB1_INT;
+//	update_vals[status_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[reason_col = n_update_cols] = &str_reason_col;
+//	update_vals[reason_col].type = DB1_STR;
+//	update_vals[reason_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[record_route_col = n_update_cols] = &str_record_route_col;
+//	update_vals[record_route_col].type = DB1_STR;
+//	update_vals[record_route_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[contact_col = n_update_cols] = &str_contact_col;
+//	update_vals[contact_col].type = DB1_STR;
+//	update_vals[contact_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[local_contact_col = n_update_cols] = &str_local_contact_col;
+//	update_vals[local_contact_col].type = DB1_STR;
+//	update_vals[local_contact_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[socket_info_col = n_update_cols] = &str_socket_info_col;
+//	update_vals[socket_info_col].type = DB1_STR;
+//	update_vals[socket_info_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[version_col = n_update_cols] = &str_version_col;
+//	update_vals[version_col].type = DB1_INT;
+//	update_vals[version_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[updated_col = n_update_cols] = &str_updated_col;
+//	update_vals[updated_col].type = DB1_INT;
+//	update_vals[updated_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[updated_winfo_col = n_update_cols] = &str_updated_winfo_col;
+//	update_vals[updated_winfo_col].type = DB1_INT;
+//	update_vals[updated_winfo_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[flags_col = n_update_cols] = &str_flags_col;
+//	update_vals[flags_col].type = DB1_INT;
+//	update_vals[flags_col].nul = 0;
+//	n_update_cols++;
+//
+//	update_keys[user_agent_col = n_update_cols] = &str_user_agent_col;
+//	update_vals[user_agent_col].type = DB1_STR;
+//	update_vals[user_agent_col].nul = 0;
+//	n_update_cols++;
+//
+//	query_vals[pres_uri_col].val.str_val = s->pres_uri;
+//	query_vals[callid_col].val.str_val = s->callid;
+//	update_vals[totag_col].val.str_val = s->to_tag;
+//	update_vals[fromtag_col].val.str_val = s->from_tag;
+//	update_vals[to_user_col].val.str_val = s->to_user;
+//	update_vals[to_domain_col].val.str_val = s->to_domain;
+//	update_vals[from_user_col].val.str_val = s->from_user;
+//	update_vals[from_domain_col].val.str_val = s->from_domain;
+//	update_vals[watcher_user_col].val.str_val = s->watcher_user;
+//	update_vals[watcher_domain_col].val.str_val = s->watcher_domain;
+//	update_vals[event_col].val.str_val = s->event->name;
+//	update_vals[event_id_col].val.str_val = s->event_id;
+//	update_vals[local_cseq_col].val.int_val = s->local_cseq;
+//	update_vals[remote_cseq_col].val.int_val = s->remote_cseq;
+//	update_vals[expires_col].val.int_val = s->expires + (int)time(NULL);
+//	update_vals[record_route_col].val.str_val = s->record_route;
+//	update_vals[contact_col].val.str_val = s->contact;
+//	update_vals[local_contact_col].val.str_val = s->local_contact;
+//	update_vals[version_col].val.int_val = s->version;
+//	update_vals[status_col].val.int_val = s->status;
+//	update_vals[reason_col].val.str_val = s->reason;
+//	update_vals[socket_info_col].val.str_val = s->sockinfo_str;
+//	update_vals[updated_col].val.int_val = s->updated;
+//	update_vals[updated_winfo_col].val.int_val = s->updated_winfo;
+//	update_vals[flags_col].val.int_val = s->flags;
+//	update_vals[user_agent_col].val.str_val =
+//			(s->user_agent.s && s->user_agent.len > 0) ? s->user_agent
+//													   : sval_empty;
+//
+//	if(pa_dbf.use_table(pa_db, &active_watchers_table) < 0) {
+//		LM_ERR("in use table sql operation\n");
+//		return -1;
+//	}
+//
+//	if(pa_dbf.update(pa_db, query_cols, 0, query_vals, update_keys, update_vals,
+//			   n_query_cols, n_update_cols)
+//			< 0) {
+//		LM_ERR("replacing presence information\n");
+//		return -1;
+//	}
+//	return 0;
+//}
 
 int insert_subs_db(subs_t *s, int type)
 {
@@ -546,6 +744,10 @@ int update_subscription_notifier(
 		}
 	}
 
+	if(pres_enable_dmq > 0 && pres_enable_subs_dmq > 0) {
+		pres_dmq_replicate_subscription(subs, NULL);
+	}
+
 	reply_code = subs->event->type & PUBL_TYPE ? get_ok_reply_code() : 200;
 	if(send_2XX_reply(msg, reply_code, subs->expires, &subs->local_contact)
 			< 0) {
@@ -610,6 +812,10 @@ int update_subscription(
 			if(notify(subs, NULL, NULL, 0, 0) < 0) {
 				LM_ERR("Could not send notify\n");
 				goto error;
+			}
+
+			if(pres_enable_dmq > 0 && pres_enable_subs_dmq > 0) {
+				pres_dmq_replicate_subscription(subs, NULL);
 			}
 			return 1;
 		}
@@ -707,6 +913,50 @@ int update_subscription(
 			goto error;
 		}
 	}
+	if(pres_enable_dmq > 0 && pres_enable_subs_dmq > 0) {
+		pres_dmq_replicate_subscription(subs, NULL);
+	}
+
+	return 0;
+
+error:
+
+	LM_ERR("occurred\n");
+	return -1;
+}
+
+int replace_subscription(subs_t *subs)
+{
+	unsigned int hash_code;
+
+	LM_DBG("replace subscription\n");
+	printf_subs(subs);
+
+	if(subs->expires == 0) {
+		LM_DBG("expires =0 -> deleting record\n");
+		delete_subs(&subs->pres_uri, &subs->event->name, &subs->to_tag,
+				&subs->from_tag, &subs->callid);
+		return 1;
+	} else {
+		/* if subscriptions are stored in memory, replace them */
+		if(pres_subs_dbmode != DB_ONLY) {
+			hash_code = core_case_hash(
+					&subs->pres_uri, &subs->event->name, shtable_size);
+			if(replace_shtable(subs_htable, hash_code, subs) < 0) {
+				LM_ERR("failed to replace subscription in memory\n");
+				goto error;
+			}
+		}
+		/* for modes that update the subscription synchronously in database, write in db */
+//		if(pres_subs_dbmode == DB_ONLY || pres_subs_dbmode == WRITE_THROUGH) {
+//			/* update in database table */
+//			if(replace_subs_db(subs) < 0) {
+//				LM_ERR("updating subscription in database table\n");
+//				goto error;
+//			}
+//		}
+	}
+
 	return 0;
 
 error:

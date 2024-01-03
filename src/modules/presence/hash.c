@@ -317,6 +317,63 @@ int insert_shtable(shtable_t htable, unsigned int hash_code, subs_t *subs)
 	return 0;
 }
 
+int replace_shtable(shtable_t htable, unsigned int hash_code, subs_t *subs)
+{
+	subs_t *new_rec = NULL;
+
+	subs_t* rec = NULL, *prev_rec = NULL;
+
+	new_rec = mem_copy_subs_noc(subs);
+	if(new_rec == NULL) {
+		LM_ERR("copying in share memory a subs_t structure\n");
+		return -1;
+	}
+
+	lock_get(&htable[hash_code].lock);
+	/* search if there is another record with the same pres_uri & callid & from_tag & to_tag */
+	rec = htable[hash_code].entries->next;
+	while (rec) {
+		if (new_rec->pres_uri.len == rec->pres_uri.len && new_rec->callid.len == rec->callid.len &&
+//				new_rec->from_tag.len == rec->from_tag.len &&
+//				new_rec->to_tag.len == rec->to_tag.len &&
+				memcmp(new_rec->pres_uri.s, rec->pres_uri.s, new_rec->pres_uri.len) == 0 &&
+//				memcmp(new_rec->from_tag.s, rec->from_tag.s, new_rec->from_tag.len) == 0 &&
+//				memcmp(new_rec->to_tag.s, rec->to_tag.s, new_rec->to_tag.len) == 0 &&
+				memcmp(new_rec->callid.s, rec->callid.s, new_rec->callid.len) == 0) {
+			LM_DBG("Found another record with the same pres_uri[%.*s], callid[%.*s],"
+				" from_tag[%.*s] and to_tag[%.*s]\n",
+				new_rec->pres_uri.len, new_rec->pres_uri.s, new_rec->callid.len, new_rec->callid.s,
+				new_rec->from_tag.len, new_rec->from_tag.s, new_rec->to_tag.len, new_rec->to_tag.s);
+			/* delete this record */
+
+			if (prev_rec) {
+				prev_rec->next = rec->next;
+			} else {
+				htable[hash_code].entries->next = rec->next;
+			}
+
+			if (pres_subs_dbmode != NO_DB) {
+				delete_db_subs(&rec->to_tag, &rec->from_tag, &rec->callid);
+			}
+
+			if (rec->contact.s!=NULL) {
+				shm_free(rec->contact.s);
+			}
+
+			shm_free(rec);
+			break;
+		}
+		prev_rec = rec;
+		rec = rec->next;
+	}
+
+	new_rec->next = htable[hash_code].entries->next;
+	htable[hash_code].entries->next = new_rec;
+	lock_release(&htable[hash_code].lock);
+
+	return 0;
+}
+
 int delete_shtable(shtable_t htable, unsigned int hash_code, subs_t *subs)
 {
 	subs_t *s = NULL, *ps = NULL;
