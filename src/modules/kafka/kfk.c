@@ -36,6 +36,8 @@
 #include "../../core/mem/shm_mem.h"
 #include "../../core/locking.h"
 
+extern int kafka_logger_param;
+
 /**
  * \brief data type for a configuration property.
  */
@@ -117,6 +119,24 @@ static void kfk_stats_topic_free(kfk_stats_t *st_topic);
 /**
  * \brief Kafka logger callback
  */
+static void kfk_logger_simple(
+		const rd_kafka_t *rk, int level, const char *fac, const char *buf)
+{
+	if (strstr(buf, "Disconnected") != NULL) {
+		// libkafka considers this as LOG_INFO
+		// FIX: log it as LOG_ERR
+		LM_ERR("RDKAFKA fac: %s : %s : %s\n", fac,
+				rk ? rd_kafka_name(rk) : NULL, buf);
+	} else if (strstr(buf, "Connection refused") != NULL) {
+		// libkafka will keep retrying to connect if kafka server is down
+		// FIX: ignore these types of errors not to get overflowed
+		;
+	} else {
+		LM_DBG("OTHER RDKAFKA fac: %s : %s : %s\n", fac,
+				rk ? rd_kafka_name(rk) : NULL, buf);
+	}
+}
+
 static void kfk_logger(
 		const rd_kafka_t *rk, int level, const char *fac, const char *buf)
 {
@@ -218,7 +238,13 @@ int kfk_init(char *brokers)
 	rk_conf = rd_kafka_conf_new();
 
 	/* Set logger */
-	rd_kafka_conf_set_log_cb(rk_conf, kfk_logger);
+	if (kafka_logger_param == 0) {
+		/* Default logger */
+		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger);
+	} else {
+		/* Simple logger */
+		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger_simple);
+	}
 
 	/* Set message delivery callback. */
 	rd_kafka_conf_set_dr_msg_cb(rk_conf, kfk_msg_delivered);

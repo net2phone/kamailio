@@ -64,6 +64,7 @@ static int w_kafka_send_key(
 /*
  * Variables and functions to deal with module parameters.
  */
+int kafka_logger_param = 0; /* Default logger callback function */
 char *brokers_param = NULL; /**< List of brokers. */
 static int kafka_conf_param(modparam_t type, void *val);
 static int kafka_topic_param(modparam_t type, void *val);
@@ -84,6 +85,7 @@ static param_export_t params[] = {{"brokers", PARAM_STRING, &brokers_param},
 		{"configuration", PARAM_STRING | USE_FUNC_PARAM,
 				(void *)kafka_conf_param},
 		{"topic", PARAM_STRING | USE_FUNC_PARAM, (void *)kafka_topic_param},
+		{"logger", PARAM_INT, &kafka_logger_param},
 		{0, 0, 0}};
 
 /**
