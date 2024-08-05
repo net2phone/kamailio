@@ -60,6 +60,22 @@ typedef struct kfk_conf_s
 } kfk_conf_t;
 
 /**
+ * \brief data type for a topic.
+ *
+ * This is an element in a topic list.
+ */
+typedef struct kfk_topic_s
+{
+	str *topic_name;			/**< Name of the topic. */
+	rd_kafka_topic_t *rd_topic; /**< rd kafkfa topic structure. */
+	param_t *attrs; /**< parsed attributes for topic configuration. */
+	char *spec;		/**< original string for topic configuration. */
+	kfk_conf_node_t
+			*property; /**< list of configuration properties for a topic. */
+	struct kfk_topic_s *next; /**< Next element in topic list. */
+} kfk_topic_t;
+
+/**
  * \brief stats about a topic.
  */
 typedef struct kfk_stats_s
@@ -71,10 +87,13 @@ typedef struct kfk_stats_s
 } kfk_stats_t;
 
 /* Static variables. */
-static rd_kafka_conf_t *rk_conf = NULL; /* Configuration object */
-static rd_kafka_t *rk = NULL;			/* Producer instance handle */
+static rd_kafka_conf_t *rk_producer_conf = NULL; /* Producer configuration object */
+static rd_kafka_conf_t *rk_consumer_conf = NULL; /* Consumer configuration object */
+static rd_kafka_t *rk_producer = NULL; /* Producer instance handle */
+static rd_kafka_t *rk_consumer = NULL; /* Consumer instance handle */
 static kfk_conf_t *kfk_conf =
 		NULL; /* List for Kafka configuration properties. */
+static kfk_topic_t *kfk_topic = NULL; /* List for Kafka topics. */
 
 #define ERRSTR_LEN 512			/**< Length of internal buffer for errors. */
 static char errstr[ERRSTR_LEN]; /* librdkafka API error reporting buffer */
@@ -92,7 +111,8 @@ static kfk_stats_t *stats_general;
 
 /* Static functions. */
 static void kfk_conf_free(kfk_conf_t *kconf);
-static int kfk_conf_configure();
+static void kfk_topic_free(kfk_topic_t *ktopic);
+static int kfk_conf_configure(rd_kafka_conf_t *);
 static int kfk_stats_add(const char *topic, rd_kafka_resp_err_t err);
 static void kfk_stats_topic_free(kfk_stats_t *st_topic);
 
@@ -197,6 +217,165 @@ static void kfk_msg_delivered(
 	}
 }
 
+static int kfk_init_consumer(char *brokers) {
+	rd_kafka_topic_partition_list_t *subscription; /* Subscribed topics */
+	rd_kafka_resp_err_t err; /* librdkafka API error code */
+	
+	/*
+	 * Create Kafka client configuration place-holder
+	 */
+	rk_consumer_conf = rd_kafka_conf_new();
+
+	/* Set logger */
+	if (kafka_logger_param == 0) {
+		/* Default logger */
+		rd_kafka_conf_set_log_cb(rk_consumer_conf, kfk_logger);
+	} else {
+		/* Simple logger */
+		rd_kafka_conf_set_log_cb(rk_consumer_conf, kfk_logger_simple);
+	}
+
+	/* Set message delivery callback. */
+	//rd_kafka_conf_set_dr_msg_cb(rk_consumer_conf, kfk_msg_delivered);
+
+	/* Configure properties: */
+	if(kfk_conf_configure(rk_consumer_conf)) {
+		rd_kafka_conf_destroy(rk_consumer_conf);
+		LM_ERR("Failed to configure general properties\n");
+		return -1;
+	}
+	LM_DBG("Consumer config properties created\n");
+
+	/* Configure brokers */
+	if (rd_kafka_conf_set(rk_consumer_conf, "bootstrap.servers", brokers, errstr,
+			      sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+		rd_kafka_conf_destroy(rk_consumer_conf);
+		LM_ERR("Failed to configure brokers\n");
+		return -1;
+	}
+	LM_DBG("Consumer brokers configured\n");
+
+	/* Set the consumer group id.
+	 * All consumers sharing the same group id will join the same
+	 * group, and the subscribed topic' partitions will be assigned
+	 * according to the partition.assignment.strategy
+	 * (consumer config property) to the consumers in the group. */
+/*
+	if (rd_kafka_conf_set(rk_consumer_conf, "group.id", groupid, errstr,
+			      sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+		rd_kafka_conf_destroy(rk_consumer_conf);
+		LM_ERR("Failed to set consumer group id: %s\n", errstr);
+		return 1;
+	}
+*/
+
+	/* If there is no previously committed offset for a partition
+	 * the auto.offset.reset strategy will be used to decide where
+	 * in the partition to start fetching messages.
+	 * By setting this to earliest the consumer will read all messages
+	 * in the partition if there was no previously committed offset. */
+	if (rd_kafka_conf_set(rk_consumer_conf, "auto.offset.reset", "earliest", errstr,
+			      sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+		rd_kafka_conf_destroy(rk_consumer_conf);
+		LM_ERR("Failed to set consumer offset earliest: %s\n", errstr);
+		return 1;
+	}
+
+	/*
+	 * Create consumer instance.
+	 *
+	 * NOTE: rd_kafka_new() takes ownership of the conf object
+	 *       and the application must not reference it again after
+	 *       this call.
+	 */
+	rk_consumer = rd_kafka_new(RD_KAFKA_CONSUMER, rk_consumer_conf, errstr, sizeof(errstr));
+	if(!rk_consumer) {
+		rd_kafka_conf_destroy(rk_consumer_conf);
+		LM_ERR("Failed to create new consumer: %s\n", errstr);
+		return -1;
+	}
+	rk_consumer_conf = NULL; /* Now owned by consumer. */
+	LM_DBG("Consumer handle created\n");
+
+	rd_kafka_poll_set_consumer(rk_consumer);
+
+	/* Convert the list of topics to a format suitable for librdkafka */
+/*
+	subscription = rd_kafka_topic_partition_list_new(topic_cnt);
+	for (i = 0; i < topic_cnt; i++)
+		rd_kafka_topic_partition_list_add(subscription, topics[i],
+						  RD_KAFKA_PARTITION_UA);
+*/
+
+	/* Subscribe to the list of topics */
+	err = rd_kafka_subscribe(rk_consumer, subscription);
+	if (err) {
+		LM_ERR("Consumer failed to subscribe to %d topics: %s\n",
+			subscription->cnt, rd_kafka_err2str(err));
+		rd_kafka_topic_partition_list_destroy(subscription);
+		rd_kafka_destroy(rk_consumer);
+		return -1;
+	}
+
+	rd_kafka_topic_partition_list_destroy(subscription);
+
+	return 0;
+}
+
+static int kfk_init_producer(char *brokers) {
+	/*
+	 * Create Kafka client configuration place-holder
+	 */
+	rk_producer_conf = rd_kafka_conf_new();
+
+	/* Set logger */
+	if (kafka_logger_param == 0) {
+		/* Default logger */
+		rd_kafka_conf_set_log_cb(rk_producer_conf, kfk_logger);
+	} else {
+		/* Simple logger */
+		rd_kafka_conf_set_log_cb(rk_producer_conf, kfk_logger_simple);
+	}
+
+	/* Set message delivery callback. */
+	rd_kafka_conf_set_dr_msg_cb(rk_producer_conf, kfk_msg_delivered);
+
+	/* Configure properties: */
+	if(kfk_conf_configure(rk_producer_conf)) {
+		rd_kafka_conf_destroy(rk_producer_conf);
+		LM_ERR("Failed to configure general properties\n");
+		return -1;
+	}
+	LM_DBG("Producer config properties created\n");
+
+	/* Configure brokers */
+	if (rd_kafka_conf_set(rk_producer_conf, "bootstrap.servers", brokers, errstr,
+			      sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+		rd_kafka_conf_destroy(rk_producer_conf);
+		LM_ERR("Failed to configure brokers\n");
+		return -1;
+	}
+	LM_DBG("Producer brokers configured\n");
+
+	/*
+	 * Create producer instance.
+	 *
+	 * NOTE: rd_kafka_new() takes ownership of the conf object
+	 *       and the application must not reference it again after
+	 *       this call.
+	 */
+	rk_producer = rd_kafka_new(RD_KAFKA_PRODUCER, rk_producer_conf, errstr, sizeof(errstr));
+	if(!rk_producer) {
+		rd_kafka_conf_destroy(rk_producer_conf);
+		LM_ERR("Failed to create new producer: %s\n", errstr);
+		return -1;
+	}
+	rk_producer_conf = NULL; /* Now owned by producer. */
+	LM_DBG("Producer handle created\n");
+
+	return 0;
+}
+
 /**
  * \brief Initialize kafka functionality.
  *
@@ -212,69 +391,23 @@ int kfk_init(char *brokers)
 		return -1;
 	}
 
-	/*
-	 * Create Kafka client configuration place-holder
-	 */
-	rk_conf = rd_kafka_conf_new();
-
-	/* Set logger */
-	if (kafka_logger_param == 0) {
-		/* Default logger */
-		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger);
-	} else {
-		/* Simple logger */
-		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger_simple);
-	}
-
-	/* Set message delivery callback. */
-	rd_kafka_conf_set_dr_msg_cb(rk_conf, kfk_msg_delivered);
-
-	/* Configure properties: */
-	if(kfk_conf_configure()) {
-		rd_kafka_conf_destroy(rk_conf);
-		LM_ERR("Failed to configure general properties\n");
+	if (kfk_init_producer(brokers) < 0) {
+		LM_ERR("Producer init error\n");
 		return -1;
 	}
-	LM_DBG("Config properties created\n");
 
-	/* Configure brokers */
-        if (rd_kafka_conf_set(rk_conf, "bootstrap.servers", brokers, errstr,
-                              sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-		rd_kafka_conf_destroy(rk_conf);
-		LM_ERR("Failed to configure brokers\n");
-                return -1;
-        }
-	LM_DBG("Brokers created\n");
-
-	/*
-	 * Create producer instance.
-	 *
-	 * NOTE: rd_kafka_new() takes ownership of the conf object
-	 *       and the application must not reference it again after
-	 *       this call.
-	 */
-	rk = rd_kafka_new(RD_KAFKA_PRODUCER, rk_conf, errstr, sizeof(errstr));
-	if(!rk) {
-		rd_kafka_conf_destroy(rk_conf);
-		LM_ERR("Failed to create new producer: %s\n", errstr);
+	if (kfk_init_consumer(brokers) < 0) {
+		LM_ERR("Consumer init error\n");
 		return -1;
 	}
-	rk_conf = NULL; /* Now owned by producer. */
-	LM_DBG("Producer handle created\n");
 
 	return 0;
 }
 
-/**
- * \brief Close kafka related functionality.
- */
-void kfk_close()
-{
+static void w_kfk_close(rd_kafka_t *rk, rd_kafka_conf_t *rk_conf) {
 	rd_kafka_resp_err_t err;
 
-	LM_DBG("Closing Kafka\n");
-
-	/* Destroy the producer instance */
+	/* Destroy the instance */
 	if(rk) {
 		/* Flushing messages. */
 		LM_DBG("Flushing messages\n");
@@ -284,7 +417,7 @@ void kfk_close()
 		}
 
 		/* Destroy producer. */
-		LM_DBG("Destroying instance of Kafka producer\n");
+		LM_DBG("Destroying instance of Kafka handle\n");
 		rd_kafka_destroy(rk);
 	}
 
@@ -293,10 +426,27 @@ void kfk_close()
 		LM_DBG("Destroying instance of Kafka configuration\n");
 		rd_kafka_conf_destroy(rk_conf);
 	}
+}
+
+/**
+ * \brief Close kafka related functionality.
+ */
+void kfk_close()
+{
+	LM_DBG("Closing Kafka\n");
+
+	w_kfk_close(rk_producer, rk_producer_conf);
+
+	w_kfk_close(rk_consumer, rk_consumer_conf);
 
 	/* Free list of configuration properties. */
 	if(kfk_conf) {
 		kfk_conf_free(kfk_conf);
+	}
+	while(kfk_topic) {
+		kfk_topic_t *next = kfk_topic->next;
+		kfk_topic_free(kfk_topic);
+		kfk_topic = next;
 	}
 }
 
@@ -395,7 +545,7 @@ error:
  *
  * \return 0 on success.
  */
-static int kfk_conf_configure()
+static int kfk_conf_configure(rd_kafka_conf_t *rk_conf)
 {
 	if(kfk_conf == NULL) {
 		/* Nothing to configure. */
@@ -451,6 +601,117 @@ static int kfk_conf_configure()
 }
 
 /**
+ * \brief Free a topic object.
+ */
+static void kfk_topic_free(kfk_topic_t *ktopic)
+{
+	if(ktopic == NULL) {
+		/* Nothing to free. */
+		return;
+	}
+
+	kfk_conf_node_t *knode = ktopic->property;
+	while(knode) {
+		kfk_conf_node_t *next = knode->next;
+		pkg_free(knode);
+		knode = next;
+	}
+
+	/* Destroy rd Kafka topic. */
+	if(ktopic->rd_topic) {
+		rd_kafka_topic_destroy(ktopic->rd_topic);
+	}
+
+	free_params(ktopic->attrs);
+	pkg_free(ktopic);
+}
+
+/**
+ * \brief Parse topic properties for Kafka.
+ */
+int kfk_topic_parse(char *spec)
+{
+	param_t *pit = NULL;
+	param_hooks_t phooks;
+	kfk_topic_t *ktopic = NULL;
+
+	str s;
+	s.s = spec;
+	s.len = strlen(spec);
+	if(s.s[s.len - 1] == ';') {
+		s.len--;
+	}
+	if(parse_params(&s, CLASS_ANY, &phooks, &pit) < 0) {
+		LM_ERR("Failed parsing params value\n");
+		goto error;
+	}
+
+	ktopic = (kfk_topic_t *)pkg_malloc(sizeof(kfk_topic_t));
+	if(ktopic == NULL) {
+		PKG_MEM_ERROR;
+		goto error;
+	}
+	memset(ktopic, 0, sizeof(kfk_topic_t));
+	ktopic->attrs = pit;
+	ktopic->spec = spec;
+	for(pit = ktopic->attrs; pit; pit = pit->next) {
+		/* Check for topic name. */
+		if(pit->name.len == 4 && strncmp(pit->name.s, "name", 4) == 0) {
+			if(ktopic->topic_name != NULL) {
+				LM_ERR("Topic name already set\n");
+				goto error;
+			}
+			ktopic->topic_name = &pit->body;
+			LM_DBG("Topic name: %.*s\n", pit->body.len, pit->body.s);
+
+		} else {
+
+			/* Parse a property. */
+			kfk_conf_node_t *knode = NULL;
+			knode = (kfk_conf_node_t *)pkg_malloc(sizeof(kfk_conf_node_t));
+			if(knode == NULL) {
+				PKG_MEM_ERROR;
+				goto error;
+			}
+			memset(knode, 0, sizeof(kfk_conf_node_t));
+
+			knode->sname = &pit->name;
+			knode->svalue = &pit->body;
+			if(knode->sname && knode->svalue) {
+				LM_DBG("Topic parsed property: %.*s -> %.*s\n",
+						knode->sname->len, knode->sname->s, knode->svalue->len,
+						knode->svalue->s);
+			}
+
+			/* Place node at beginning of ktopic list. */
+			knode->next = ktopic->property;
+			ktopic->property = knode;
+		} /* if pit->name.len == 4 */
+	}	  /* for pit */
+
+	/* Topic name is mandatory. */
+	if(ktopic->topic_name == NULL) {
+		LM_ERR("No topic name\n");
+		goto error;
+	}
+
+	/* Place topic at beginning of topic list. */
+	ktopic->next = kfk_topic;
+	kfk_topic = ktopic;
+	return 0;
+
+error:
+	if(pit != NULL) {
+		free_params(pit);
+	}
+
+	if(ktopic != NULL) {
+		kfk_topic_free(ktopic);
+	}
+	return -1;
+}
+
+/**
  * \brief send a message to a topic.
  *
  * \param topic_name name of the topic
@@ -479,22 +740,22 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 
 	/* Send a message. */
 	topic_name->s[topic_name->len] = '\0';
-        err = rd_kafka_producev(
-                    /* Producer handle */
-                    rk,
-                    /* Topic name */
-                    RD_KAFKA_V_TOPIC(topic_name->s),
-                    /* Make a copy of the payload. */
-                    RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+	err = rd_kafka_producev(
+		    /* Producer handle */
+		    rk_producer,
+		    /* Topic name */
+		    RD_KAFKA_V_TOPIC(topic_name->s),
+		    /* Make a copy of the payload. */
+		    RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
 		    RD_KAFKA_V_KEY(keyp, key_len),
-                    /* Message value and length */
+		    /* Message value and length */
 		    RD_KAFKA_V_VALUE(message->s, message->len),
-                    /* Per-Message opaque, provided in
-                     * delivery report callback as
-                     * msg_opaque. */
-                    RD_KAFKA_V_OPAQUE(NULL),
-                    /* End sentinel */
-                    RD_KAFKA_V_END);
+		    /* Per-Message opaque, provided in
+		     * delivery report callback as
+		     * msg_opaque. */
+		    RD_KAFKA_V_OPAQUE(NULL),
+		    /* End sentinel */
+		    RD_KAFKA_V_END);
 
 	
 	if (err) {
@@ -516,7 +777,7 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 			 * queue.buffering.max.messages and
 			 * queue.buffering.max.kbytes */
 			/*
-			rd_kafka_poll(rk, 1000); // block for max 1000 ms
+			rd_kafka_poll(rk_producer, 1000); // block for max 1000 ms
 			goto retry;
 			*/
 		//} else {}
@@ -525,7 +786,7 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 	}
 
 	/* Poll to handle delivery reports */
-	rd_kafka_poll(rk, 0);
+	rd_kafka_poll(rk_producer, 0);
 	LM_DBG("Message polled\n");
 
 	return 0;

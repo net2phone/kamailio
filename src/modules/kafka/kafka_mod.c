@@ -68,6 +68,7 @@ int child_init_ok = 0;
 int kafka_logger_param = 0; /* Default logger callback function */
 char *brokers_param = NULL; /**< List of brokers. */
 static int kafka_conf_param(modparam_t type, void *val);
+static int kafka_topic_param(modparam_t type, void *val);
 
 /**
  * \brief Module commands
@@ -84,6 +85,7 @@ static cmd_export_t cmds[] = {{"kafka_send", (cmd_function)w_kafka_send, 2,
 static param_export_t params[] = {{"brokers", PARAM_STRING, &brokers_param},
 		{"configuration", PARAM_STRING | USE_FUNC_PARAM,
 				(void *)kafka_conf_param},
+		{"topic", PARAM_STRING | USE_FUNC_PARAM, (void *)kafka_topic_param},
 		{"logger", PARAM_INT, &kafka_logger_param},
 		{0, 0, 0}};
 
@@ -149,6 +151,14 @@ static void mod_destroy(void)
 static int kafka_conf_param(modparam_t type, void *val)
 {
 	return kfk_conf_parse((char *)val);
+}
+
+/**
+ * \brief Parse topic parameter.
+ */
+static int kafka_topic_param(modparam_t type, void *val)
+{
+	return kfk_topic_parse((char *)val);
 }
 
 static int fixup_kafka_send(void **param, int param_no)
