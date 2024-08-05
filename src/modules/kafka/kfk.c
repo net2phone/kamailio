@@ -59,22 +59,6 @@ typedef struct kfk_conf_s
 } kfk_conf_t;
 
 /**
- * \brief data type for a topic.
- *
- * This is an element in a topic list.
- */
-typedef struct kfk_topic_s
-{
-	str *topic_name;			/**< Name of the topic. */
-	rd_kafka_topic_t *rd_topic; /**< rd kafkfa topic structure. */
-	param_t *attrs; /**< parsed attributes for topic configuration. */
-	char *spec;		/**< original string for topic configuration. */
-	kfk_conf_node_t
-			*property; /**< list of configuration properties for a topic. */
-	struct kfk_topic_s *next; /**< Next element in topic list. */
-} kfk_topic_t;
-
-/**
  * \brief stats about a topic.
  */
 typedef struct kfk_stats_s
@@ -90,7 +74,6 @@ static rd_kafka_conf_t *rk_conf = NULL; /* Configuration object */
 static rd_kafka_t *rk = NULL;			/* Producer instance handle */
 static kfk_conf_t *kfk_conf =
 		NULL; /* List for Kafka configuration properties. */
-static kfk_topic_t *kfk_topic = NULL; /* List for Kafka topics. */
 
 #define ERRSTR_LEN 512			/**< Length of internal buffer for errors. */
 static char errstr[ERRSTR_LEN]; /* librdkafka API error reporting buffer */
@@ -108,11 +91,7 @@ static kfk_stats_t *stats_general;
 
 /* Static functions. */
 static void kfk_conf_free(kfk_conf_t *kconf);
-static void kfk_topic_free(kfk_topic_t *ktopic);
 static int kfk_conf_configure();
-static int kfk_topic_list_configure();
-static int kfk_topic_exist(str *topic_name);
-static rd_kafka_topic_t *kfk_topic_get(str *topic_name);
 static int kfk_stats_add(const char *topic, rd_kafka_resp_err_t err);
 static void kfk_stats_topic_free(kfk_stats_t *st_topic);
 
@@ -251,9 +230,20 @@ int kfk_init(char *brokers)
 
 	/* Configure properties: */
 	if(kfk_conf_configure()) {
+		rd_kafka_conf_destroy(rk_conf);
 		LM_ERR("Failed to configure general properties\n");
 		return -1;
 	}
+	LM_DBG("Config properties created\n");
+
+	/* Configure brokers */
+        if (rd_kafka_conf_set(rk_conf, "bootstrap.servers", brokers, errstr,
+                              sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+		rd_kafka_conf_destroy(rk_conf);
+		LM_ERR("Failed to configure brokers\n");
+                return -1;
+        }
+	LM_DBG("Brokers created\n");
 
 	/*
 	 * Create producer instance.
@@ -264,25 +254,12 @@ int kfk_init(char *brokers)
 	 */
 	rk = rd_kafka_new(RD_KAFKA_PRODUCER, rk_conf, errstr, sizeof(errstr));
 	if(!rk) {
+		rd_kafka_conf_destroy(rk_conf);
 		LM_ERR("Failed to create new producer: %s\n", errstr);
 		return -1;
 	}
 	rk_conf = NULL; /* Now owned by producer. */
 	LM_DBG("Producer handle created\n");
-
-	LM_DBG("Adding broker: %s\n", brokers);
-	/* Add brokers */
-	if(rd_kafka_brokers_add(rk, brokers) == 0) {
-		LM_ERR("No valid brokers specified: %s\n", brokers);
-		return -1;
-	}
-	LM_DBG("Added broker: %s\n", brokers);
-
-	/* Topic creation and configuration. */
-	if(kfk_topic_list_configure()) {
-		LM_ERR("Failed to configure topics\n");
-		return -1;
-	}
 
 	return 0;
 }
@@ -319,13 +296,6 @@ void kfk_close()
 	/* Free list of configuration properties. */
 	if(kfk_conf) {
 		kfk_conf_free(kfk_conf);
-	}
-
-	/* Free list of topics. */
-	while(kfk_topic) {
-		kfk_topic_t *next = kfk_topic->next;
-		kfk_topic_free(kfk_topic);
-		kfk_topic = next;
 	}
 }
 
@@ -480,367 +450,6 @@ static int kfk_conf_configure()
 }
 
 /**
- * \brief Free a topic object.
- */
-static void kfk_topic_free(kfk_topic_t *ktopic)
-{
-	if(ktopic == NULL) {
-		/* Nothing to free. */
-		return;
-	}
-
-	kfk_conf_node_t *knode = ktopic->property;
-	while(knode) {
-		kfk_conf_node_t *next = knode->next;
-		pkg_free(knode);
-		knode = next;
-	}
-
-	/* Destroy rd Kafka topic. */
-	if(ktopic->rd_topic) {
-		rd_kafka_topic_destroy(ktopic->rd_topic);
-	}
-
-	free_params(ktopic->attrs);
-	pkg_free(ktopic);
-}
-
-/**
- * \brief Parse topic properties for Kafka.
- */
-int kfk_topic_parse(char *spec)
-{
-	param_t *pit = NULL;
-	param_hooks_t phooks;
-	kfk_topic_t *ktopic = NULL;
-
-	str s;
-	s.s = spec;
-	s.len = strlen(spec);
-	if(s.s[s.len - 1] == ';') {
-		s.len--;
-	}
-	if(parse_params(&s, CLASS_ANY, &phooks, &pit) < 0) {
-		LM_ERR("Failed parsing params value\n");
-		goto error;
-	}
-
-	ktopic = (kfk_topic_t *)pkg_malloc(sizeof(kfk_topic_t));
-	if(ktopic == NULL) {
-		PKG_MEM_ERROR;
-		goto error;
-	}
-	memset(ktopic, 0, sizeof(kfk_topic_t));
-	ktopic->attrs = pit;
-	ktopic->spec = spec;
-	for(pit = ktopic->attrs; pit; pit = pit->next) {
-		/* Check for topic name. */
-		if(pit->name.len == 4 && strncmp(pit->name.s, "name", 4) == 0) {
-			if(ktopic->topic_name != NULL) {
-				LM_ERR("Topic name already set\n");
-				goto error;
-			}
-			ktopic->topic_name = &pit->body;
-			LM_DBG("Topic name: %.*s\n", pit->body.len, pit->body.s);
-
-		} else {
-
-			/* Parse a property. */
-			kfk_conf_node_t *knode = NULL;
-			knode = (kfk_conf_node_t *)pkg_malloc(sizeof(kfk_conf_node_t));
-			if(knode == NULL) {
-				PKG_MEM_ERROR;
-				goto error;
-			}
-			memset(knode, 0, sizeof(kfk_conf_node_t));
-
-			knode->sname = &pit->name;
-			knode->svalue = &pit->body;
-			if(knode->sname && knode->svalue) {
-				LM_DBG("Topic parsed property: %.*s -> %.*s\n",
-						knode->sname->len, knode->sname->s, knode->svalue->len,
-						knode->svalue->s);
-			}
-
-			/* Place node at beginning of ktopic list. */
-			knode->next = ktopic->property;
-			ktopic->property = knode;
-		} /* if pit->name.len == 4 */
-	}	  /* for pit */
-
-	/* Topic name is mandatory. */
-	if(ktopic->topic_name == NULL) {
-		LM_ERR("No topic name\n");
-		goto error;
-	}
-
-	/* Place topic at beginning of topic list. */
-	ktopic->next = kfk_topic;
-	kfk_topic = ktopic;
-	return 0;
-
-error:
-	if(pit != NULL) {
-		free_params(pit);
-	}
-
-	if(ktopic != NULL) {
-		kfk_topic_free(ktopic);
-	}
-	return -1;
-}
-
-/**
- * \brief Create and configure a topic.
- *
- * \return 0 on success.
- */
-static int kfk_topic_configure(kfk_topic_t *ktopic)
-{
-	rd_kafka_topic_conf_t *topic_conf = NULL;
-	rd_kafka_topic_t *rkt = NULL;
-
-	if(ktopic == NULL) {
-		LM_ERR("No topic to create\n");
-		goto error;
-	}
-
-	/* Check topic name. */
-	if(!ktopic->topic_name || !ktopic->topic_name->s
-			|| ktopic->topic_name->len == 0) {
-		LM_ERR("Bad topic name\n");
-		goto error;
-	}
-
-	int topic_found = kfk_topic_exist(ktopic->topic_name);
-	if(topic_found == -1) {
-		LM_ERR("Failed to search for topic %.*s in cluster\n",
-				ktopic->topic_name->len, ktopic->topic_name->s);
-		goto error;
-	} else if(topic_found == 0) {
-		LM_ERR("Topic not found %.*s in cluster\n", ktopic->topic_name->len,
-				ktopic->topic_name->s);
-		goto error;
-	}
-
-	LM_DBG("Creating topic: %.*s\n", ktopic->topic_name->len,
-			ktopic->topic_name->s);
-
-	/* Topic configuration */
-
-	topic_conf = rd_kafka_topic_conf_new();
-
-	kfk_conf_node_t *knode = kfk_topic->property;
-	while(knode) {
-		kfk_conf_node_t *next = knode->next;
-		str *sname = knode->sname;
-		str *svalue = knode->svalue;
-		knode = next;
-
-		if(sname == NULL || sname->len == 0 || sname->s == NULL) {
-			LM_ERR("Bad name in topic configuration property\n");
-			continue;
-		}
-
-		if(svalue == NULL || svalue->len == 0 || svalue->s == NULL) {
-			LM_ERR("Bad value in topic configuration property\n");
-			continue;
-		}
-
-		/* We temporarily convert to zstring. */
-		char cname = sname->s[sname->len];
-		sname->s[sname->len] = '\0';
-		char cvalue = svalue->s[svalue->len];
-		svalue->s[svalue->len] = '\0';
-
-		LM_DBG("Setting topic property: %s -> %s\n", sname->s, svalue->s);
-
-		rd_kafka_conf_res_t res;
-		res = rd_kafka_topic_conf_set(
-				topic_conf, sname->s, svalue->s, errstr, sizeof(errstr));
-		if(res != RD_KAFKA_CONF_OK) {
-			LM_ERR("Failed to set topic configuration: %s -> %s\n", sname->s,
-					svalue->s);
-
-			/* We restore zstrings back to str */
-			sname->s[sname->len] = cname;
-			svalue->s[svalue->len] = cvalue;
-
-			goto error;
-		}
-
-		/* We restore zstrings back to str */
-		sname->s[sname->len] = cname;
-		svalue->s[svalue->len] = cvalue;
-
-	} /* while knode */
-
-	/* We temporarily convert to zstring. */
-	char c_topic_name = ktopic->topic_name->s[ktopic->topic_name->len];
-	ktopic->topic_name->s[ktopic->topic_name->len] = '\0';
-
-	rkt = rd_kafka_topic_new(rk, ktopic->topic_name->s, topic_conf);
-	if(!rkt) {
-		LM_ERR("Failed to create topic (%s): %s\n", ktopic->topic_name->s,
-				rd_kafka_err2str(rd_kafka_last_error()));
-
-		/* We restore zstrings back to str */
-		ktopic->topic_name->s[ktopic->topic_name->len] = c_topic_name;
-
-		goto error;
-	}
-	topic_conf = NULL; /* Now owned by topic */
-	LM_DBG("Topic created: %s\n", ktopic->topic_name->s);
-
-	/* We restore zstrings back to str */
-	ktopic->topic_name->s[ktopic->topic_name->len] = c_topic_name;
-
-	/* Everything went fine. */
-	ktopic->rd_topic = rkt;
-	return 0;
-
-error:
-
-	/* Destroy topic configuration. */
-	if(topic_conf) {
-		rd_kafka_topic_conf_destroy(topic_conf);
-	}
-
-	/* Destroy topic */
-	if(rkt) {
-		LM_DBG("Destroying topic\n");
-		rd_kafka_topic_destroy(rkt);
-	}
-
-	return -1;
-}
-
-/**
- * \brief Create and configure a list of topics.
- *
- * \return 0 on success.
- */
-static int kfk_topic_list_configure()
-{
-	kfk_topic_t *ktopic = kfk_topic;
-
-	while(ktopic) {
-		kfk_topic_t *next = ktopic->next;
-		/* Create current topic. */
-		if(kfk_topic_configure(ktopic)) {
-			LM_ERR("Failed to create topic: %.*s\n", ktopic->topic_name->len,
-					ktopic->topic_name->s);
-			return -1;
-		}
-		ktopic = next;
-	}
-
-	return 0;
-}
-
-/* -1 means RD_POLL_INFINITE */
-/* 100000 means 100 seconds */
-#define METADATA_TIMEOUT \
-	100000 /**< Timeout when asking for metadata in milliseconds. */
-
-/**
- * \brief check that a topic exists in cluster.
- *
- * \return 0 if topic does not exist.
- * \return 1 if topic does exist.
- * \return -1 on error.
- */
-static int kfk_topic_exist(str *topic_name)
-{
-	/* Where to receive metadata. */
-	const struct rd_kafka_metadata *metadatap = NULL;
-	int i;
-	int topic_found = 0; /* Topic not found by default. */
-
-	if(!topic_name || topic_name->len == 0 || topic_name->s == NULL) {
-		LM_ERR("Bad topic name\n");
-		goto error;
-	}
-
-	/* Get metadata for all topics. */
-	rd_kafka_resp_err_t res;
-	res = rd_kafka_metadata(rk, 1, NULL, &metadatap, METADATA_TIMEOUT);
-	if(res != RD_KAFKA_RESP_ERR_NO_ERROR) {
-		LM_ERR("Failed to get metadata: %s\n", rd_kafka_err2str(res));
-		goto error;
-	}
-
-	/* List topics */
-	for(i = 0; i < metadatap->topic_cnt; i++) {
-		rd_kafka_metadata_topic_t *t = &metadatap->topics[i];
-		if(t->topic) {
-			LM_DBG("Metadata Topic: %s\n", t->topic);
-			if(strncmp(topic_name->s, t->topic, topic_name->len) == 0) {
-				topic_found = 1;
-				LM_DBG("Metadata Topic (%s) found!\n", t->topic);
-				break;
-			}
-		}
-	} // for (i=0; i<m->topic_cnt; i++)
-
-	/* Destroy metadata. */
-	rd_kafka_metadata_destroy(metadatap);
-
-	if(topic_found == 0) {
-		LM_DBG("Topic not found: %.*s\n", topic_name->len, topic_name->s);
-		return 0;
-	}
-
-	LM_DBG("Topic found: %.*s\n", topic_name->len, topic_name->s);
-	return 1;
-
-error:
-
-	/* Destroy metadata. */
-	if(metadatap) {
-		rd_kafka_metadata_destroy(metadatap);
-	}
-
-	return -1;
-}
-
-/**
- * \brief get a topic based on its name.
- *
- * \return topic if it founds a matching one, NULL otherwise.
- */
-static rd_kafka_topic_t *kfk_topic_get(str *topic_name)
-{
-	rd_kafka_topic_t *result = NULL;
-
-	if(!topic_name || topic_name->len == 0 || topic_name->s == NULL) {
-		LM_ERR("Bad topic name\n");
-		goto clean;
-	}
-
-	kfk_topic_t *ktopic = kfk_topic;
-	while(ktopic) {
-		kfk_topic_t *next = ktopic->next;
-
-		if(topic_name->len == ktopic->topic_name->len
-				&& strncmp(topic_name->s, ktopic->topic_name->s,
-						   topic_name->len)
-						   == 0) {
-			LM_DBG("Topic name match: %.*s\n", ktopic->topic_name->len,
-					ktopic->topic_name->s);
-			result = ktopic->rd_topic;
-			break;
-		}
-
-		ktopic = next;
-	}
-
-clean:
-
-	return result;
-}
-
-/**
  * \brief send a message to a topic.
  *
  * \param topic_name name of the topic
@@ -851,11 +460,10 @@ clean:
  */
 int kfk_message_send(str *topic_name, str *message, str *key)
 {
-	/* Get topic from name. */
-	rd_kafka_topic_t *rkt = kfk_topic_get(topic_name);
+	rd_kafka_resp_err_t err;
 
-	if(!rkt) {
-		LM_ERR("Topic not found: %.*s\n", topic_name->len, topic_name->s);
+	if (!rk) {
+		LM_ERR("kafka child init NOT ok; skip sending message\n");
 		return -1;
 	}
 
@@ -869,23 +477,51 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 	}
 
 	/* Send a message. */
-	if(rd_kafka_produce(rkt, RD_KAFKA_PARTITION_UA, RD_KAFKA_MSG_F_COPY,
-			   /* Payload and length */
-			   message->s, message->len,
-			   /* Optional key and its length */
-			   keyp, key_len,
-			   /* Message opaque, provided in
-			 * delivery report callback as
-			 * msg_opaque. */
-			   NULL)
-			== -1) {
-		rd_kafka_resp_err_t err = rd_kafka_last_error();
-		LM_ERR("Error sending message: %s\n", rd_kafka_err2str(err));
+	topic_name->s[topic_name->len] = '\0';
+        err = rd_kafka_producev(
+                    /* Producer handle */
+                    rk,
+                    /* Topic name */
+                    RD_KAFKA_V_TOPIC(topic_name->s),
+                    /* Make a copy of the payload. */
+                    RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+		    RD_KAFKA_V_KEY(keyp, key_len),
+                    /* Message value and length */
+		    RD_KAFKA_V_VALUE(message->s, message->len),
+                    /* Per-Message opaque, provided in
+                     * delivery report callback as
+                     * msg_opaque. */
+                    RD_KAFKA_V_OPAQUE(NULL),
+                    /* End sentinel */
+                    RD_KAFKA_V_END);
 
-		return -1;
+	
+	if (err) {
+		/*
+		 * Failed to *enqueue* message for producing.
+		 */
+		LM_ERR("Failed to produce to topic %.*s: %s. Queue full! Message lost but continue routing logic ASAP!\n", topic_name->len, topic_name->s, rd_kafka_err2str(err));
+	
+		//if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+			/* If the internal queue is full, wait for
+			 * messages to be delivered and then retry.
+			 * The internal queue represents both
+			 * messages to be sent and messages that have
+			 * been sent or failed, awaiting their
+			 * delivery report callback to be called.
+			 *
+			 * The internal queue is limited by the
+			 * configuration property
+			 * queue.buffering.max.messages and
+			 * queue.buffering.max.kbytes */
+			/*
+			rd_kafka_poll(rk, 1000); // block for max 1000 ms
+			goto retry;
+			*/
+		//} else {}
+	} else {
+		LM_DBG("Enqueued message (%d bytes) for topic %.*s\n", message->len, topic_name->len, topic_name->s);
 	}
-
-	LM_DBG("Message sent\n");
 
 	/* Poll to handle delivery reports */
 	rd_kafka_poll(rk, 0);
