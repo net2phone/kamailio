@@ -36,6 +36,7 @@
 #include "../../core/mem/shm_mem.h"
 #include "../../core/locking.h"
 
+extern int child_init_ok;
 extern int kafka_logger_param;
 
 /**
@@ -111,7 +112,7 @@ static void kfk_logger_simple(
 		// FIX: ignore these types of errors not to get overflowed
 		;
 	} else {
-		LM_DBG("OTHER RDKAFKA fac: %s : %s : %s\n", fac,
+		LM_NOTICE("OTHER RDKAFKA fac: %s : %s : %s\n", fac,
 				rk ? rd_kafka_name(rk) : NULL, buf);
 	}
 }
@@ -462,7 +463,7 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 {
 	rd_kafka_resp_err_t err;
 
-	if (!rk) {
+	if (!child_init_ok) {
 		LM_ERR("kafka child init NOT ok; skip sending message\n");
 		return -1;
 	}
@@ -520,7 +521,7 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 			*/
 		//} else {}
 	} else {
-		LM_DBG("Enqueued message (%d bytes) for topic %.*s\n", message->len, topic_name->len, topic_name->s);
+		LM_NOTICE("Enqueued message (%d bytes) for topic %.*s\n", message->len, topic_name->len, topic_name->s);
 	}
 
 	/* Poll to handle delivery reports */

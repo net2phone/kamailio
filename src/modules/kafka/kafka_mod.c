@@ -64,6 +64,7 @@ static int w_kafka_send_key(
 /*
  * Variables and functions to deal with module parameters.
  */
+int child_init_ok = 0;
 int kafka_logger_param = 0; /* Default logger callback function */
 char *brokers_param = NULL; /**< List of brokers. */
 static int kafka_conf_param(modparam_t type, void *val);
@@ -125,9 +126,10 @@ static int child_init(int rank)
 	if(rank == PROC_INIT || rank == PROC_TCP_MAIN)
 		return 0;
 
+	child_init_ok = 1;
 	if(kfk_init(brokers_param)) {
 		LM_ERR("Failed to initialize Kafka\n");
-		return -1;
+		child_init_ok = 0;
 	}
 	return 0;
 }
