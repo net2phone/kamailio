@@ -169,6 +169,17 @@ static void kfk_logger(
 }
 
 /**
+ * \brief Stats report callback
+ */
+static int kfk_stats( rd_kafka_t *rk, char *json, size_t json_len, void *opaque)
+{
+	LM_DBG("Statistics callback\n");
+	LM_NOTICE("Producer Statistics: %.*s", (int)json_len, json);
+
+	return 0;
+}
+
+/**
  * \brief Message delivery report callback using the richer rd_kafka_message_t object.
  */
 static void kfk_msg_delivered(
@@ -228,6 +239,8 @@ int kfk_init(char *brokers)
 
 	/* Set message delivery callback. */
 	rd_kafka_conf_set_dr_msg_cb(rk_conf, kfk_msg_delivered);
+
+	rd_kafka_conf_set_stats_cb(rk_conf, kfk_stats);
 
 	/* Configure properties: */
 	if(kfk_conf_configure()) {
@@ -501,9 +514,8 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 		/*
 		 * Failed to *enqueue* message for producing.
 		 */
-		LM_ERR("Failed to produce to topic %.*s: %s. Queue full! Message lost but continue routing logic ASAP!\n", topic_name->len, topic_name->s, rd_kafka_err2str(err));
 	
-		//if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+		if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
 			/* If the internal queue is full, wait for
 			 * messages to be delivered and then retry.
 			 * The internal queue represents both
@@ -519,9 +531,13 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 			rd_kafka_poll(rk, 1000); // block for max 1000 ms
 			goto retry;
 			*/
-		//} else {}
+			LM_ERR("Failed to produce to topic %.*s: %s. Queue full! Message lost but continue routing logic ASAP!\n", topic_name->len, topic_name->s, rd_kafka_err2str(err));
+		} else {
+			LM_ERR("Failed to produce to topic %.*s: %s. Message lost but continue routing logic ASAP!\n", topic_name->len, topic_name->s, rd_kafka_err2str(err));
+		}
 	} else {
 		LM_NOTICE("Enqueued message (%d bytes) for topic %.*s\n", message->len, topic_name->len, topic_name->s);
+		//LM_NOTICE("Enqueued message (%d bytes) for topic %.*s. Queue len = %d\n", message->len, topic_name->len, topic_name->s, rd_kafka_outq_len(rk));
 	}
 
 	/* Poll to handle delivery reports */
