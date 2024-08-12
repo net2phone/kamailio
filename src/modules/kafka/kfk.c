@@ -102,15 +102,13 @@ static void kfk_stats_topic_free(kfk_stats_t *st_topic);
 static void kfk_logger_simple(
 		const rd_kafka_t *rk, int level, const char *fac, const char *buf)
 {
-	if (strstr(buf, "Disconnected") != NULL) {
-		// libkafka considers this as LOG_INFO
-		// FIX: log it as LOG_ERR
-		LM_ERR("RDKAFKA fac: %s : %s : %s\n", fac,
-				rk ? rd_kafka_name(rk) : NULL, buf);
-	} else if (strstr(buf, "Connection refused") != NULL) {
+	if (strstr(buf, "Connection refused") != NULL) {
 		// libkafka will keep retrying to connect if kafka server is down
 		// FIX: ignore these types of errors not to get overflowed
 		;
+	} else if (strstr(fac, "FAIL") != NULL || strstr(fac, "ERROR")) {
+		LM_ERR("RDKAFKA fac: %s : %s : %s\n", fac,
+				rk ? rd_kafka_name(rk) : NULL, buf);
 	} else {
 		LM_NOTICE("OTHER RDKAFKA fac: %s : %s : %s\n", fac,
 				rk ? rd_kafka_name(rk) : NULL, buf);
@@ -120,6 +118,11 @@ static void kfk_logger_simple(
 static void kfk_logger(
 		const rd_kafka_t *rk, int level, const char *fac, const char *buf)
 {
+	if (kafka_logger_param != 0 && strstr(buf, "Connection refused") != NULL) {
+		// libkafka will keep retrying to connect if kafka server is down
+		// FIX: ignore these types of errors not to get overflowed
+		return ;
+	}
 
 	switch(level) {
 		case LOG_EMERG:
@@ -171,6 +174,7 @@ static void kfk_logger(
 /**
  * \brief Stats report callback
  */
+/*
 static int kfk_stats( rd_kafka_t *rk, char *json, size_t json_len, void *opaque)
 {
 	LM_DBG("Statistics callback\n");
@@ -179,6 +183,14 @@ static int kfk_stats( rd_kafka_t *rk, char *json, size_t json_len, void *opaque)
 	return 0;
 }
 
+
+static void kfk_errors( rd_kafka_t *rk, int err, const char *reason, void *opaque)
+{
+	LM_DBG("Errors callback\n");
+	LM_ERR("Producer Error: %d %s", err, reason);
+}
+*/
+
 /**
  * \brief Message delivery report callback using the richer rd_kafka_message_t object.
  */
@@ -186,25 +198,48 @@ static void kfk_msg_delivered(
 		rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque)
 {
 
-	LM_DBG("Message delivered callback\n");
-
+	rd_kafka_resp_err_t err;
 	const char *topic_name = NULL;
 	topic_name = rd_kafka_topic_name(rkmessage->rkt);
+
+	LM_DBG("Message delivered callback\n");
+
 	if(!topic_name) {
 		LM_ERR("Cannot get topic name for delivered message\n");
 		return;
 	}
 
-	kfk_stats_add(topic_name, rkmessage->err);
+	if(rkmessage->err == RD_KAFKA_RESP_ERR_UNKNOWN_TOPIC_OR_PART || rkmessage->err == RD_KAFKA_RESP_ERR_INVALID_REPLICATION_FACTOR) {
+		err = rd_kafka_producev(
+			    rk,
+			    RD_KAFKA_V_TOPIC(topic_name),
+			    RD_KAFKA_V_MSGFLAGS(RD_KAFKA_MSG_F_COPY),
+			    RD_KAFKA_V_KEY(rkmessage->key, rkmessage->key_len),
+				RD_KAFKA_V_VALUE(rkmessage->payload, rkmessage->len),
+			    RD_KAFKA_V_OPAQUE(NULL),
+			    RD_KAFKA_V_END);
+	
+		if (err) {
+			if (err == RD_KAFKA_RESP_ERR__QUEUE_FULL) {
+				LM_ERR("Failed to re-produce to topic %s: %s.  Message lost in delyvery callback!\n", topic_name, rd_kafka_err2str(err));
+			} else {
+				LM_ERR("Failed to re-produce to topic %s: %s. Message lost in delyvery callback!\n", topic_name, rd_kafka_err2str(err));
+			}
 
-	if(rkmessage->err) {
-		LM_ERR("RDKAFKA Message delivery failed: %s\n",
-				rd_kafka_err2str(rkmessage->err));
+			kfk_stats_add(topic_name, rkmessage->err);
+		} else {
+			LM_NOTICE("RE-Enqueued message (%d bytes) for topic %s\n", (int)rkmessage->len, topic_name);
+		}
+
+	} else if(rkmessage->err) {
+		LM_ERR("RDKAFKA Message delivery failed: err %d; err text %s\n", rkmessage->err, rd_kafka_err2str(rkmessage->err));
+		kfk_stats_add(topic_name, rkmessage->err);
 	} else {
 		LM_DBG("RDKAFKA Message delivered (%zd bytes, offset %" PRId64 ", "
 			   "partition %" PRId32 "): %.*s\n",
 				rkmessage->len, rkmessage->offset, rkmessage->partition,
 				(int)rkmessage->len, (const char *)rkmessage->payload);
+		kfk_stats_add(topic_name, rkmessage->err);
 	}
 }
 
@@ -228,19 +263,24 @@ int kfk_init(char *brokers)
 	 */
 	rk_conf = rd_kafka_conf_new();
 
-	/* Set logger */
+/*
 	if (kafka_logger_param == 0) {
-		/* Default logger */
 		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger);
 	} else {
-		/* Simple logger */
 		rd_kafka_conf_set_log_cb(rk_conf, kfk_logger_simple);
 	}
+*/
+
+	/* Set logger */
+	rd_kafka_conf_set_log_cb(rk_conf, kfk_logger);
 
 	/* Set message delivery callback. */
 	rd_kafka_conf_set_dr_msg_cb(rk_conf, kfk_msg_delivered);
 
+/*
+	rd_kafka_conf_set_error_cb(rk_conf, kfk_errors);
 	rd_kafka_conf_set_stats_cb(rk_conf, kfk_stats);
+*/
 
 	/* Configure properties: */
 	if(kfk_conf_configure()) {
@@ -258,6 +298,10 @@ int kfk_init(char *brokers)
                 return -1;
         }
 	LM_DBG("Brokers created\n");
+
+	//rd_kafka_topic_conf_t *rk_conf_topic = rd_kafka_topic_conf_new();
+	//rd_kafka_topic_conf_set(rk_conf_topic, "bootstrap.servers", brokers, errstr, sizeof(errstr));
+	//rd_kafka_conf_set_default_topic_conf(rk_conf, rk_conf_topic);
 
 	/*
 	 * Create producer instance.
