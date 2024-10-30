@@ -359,6 +359,10 @@ int ht_init_tables(void)
 	ht = _ht_root;
 
 	while(ht) {
+		if (ht->entries != NULL) {
+			continue;
+		}
+
 		LM_DBG("initializing htable [%.*s] with nr. of slots: %d\n",
 				ht->name.len, ht->name.s, ht->htsize);
 		if(ht->name.len + sizeof("htable:expired:") < HT_EVEX_NAME_SIZE) {
