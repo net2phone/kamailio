@@ -104,7 +104,7 @@ static int tps_htable_insert_initial_method_branch(
 		tps_data_t *md, tps_data_t *sd)
 {
 	char *ptr;
-	int ret = 0;
+	int ret = 0, expire = 0;
 	unsigned long rectime = 0;
 	str xuuid = str_init("");
 
@@ -161,6 +161,19 @@ static int tps_htable_insert_initial_method_branch(
 	ret = helper_htable_insert(_tps_htable_transaction);
 	if(ret < 0) {
 		LM_ERR("failed to insert htable value\n");
+		return -1;
+	}
+
+
+	// set expire for key/val
+	expire = (unsigned long)_tps_api.get_branch_expire();
+	if(expire == 0) {
+		return 0;
+	}
+
+	ret = helper_htable_set_expire(_tps_htable_transaction, expire);
+	if(ret < 0) {
+		LM_ERR("failed to set expire\n");
 		return -1;
 	}
 
