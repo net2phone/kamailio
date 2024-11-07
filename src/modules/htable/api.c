@@ -69,7 +69,7 @@ int ht_api_del_cell(str *hname, str *name)
 /**
  *
  */
-int ht_api_set_cell_expire(str *hname, str *name, int type, int_str *val)
+int ht_api_set_cell_expire(str *hname, str *name, int type, int_str *val, int mode)
 {
 	ht_t *ht;
 	ht = ht_get_table(hname);
@@ -77,7 +77,7 @@ int ht_api_set_cell_expire(str *hname, str *name, int type, int_str *val)
 		return -1;
 	if(ht->dmqreplicate > 0
 			&& ht_dmq_replicate_action(
-					   HT_DMQ_SET_CELL_EXPIRE, hname, name, type, val, 0)
+					   HT_DMQ_SET_CELL_EXPIRE, hname, name, type, val, mode)
 					   != 0) {
 		LM_ERR("dmq replication failed\n");
 	}

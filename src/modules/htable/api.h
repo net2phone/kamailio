@@ -33,7 +33,7 @@ typedef ht_cell_t *(*ht_api_get_cell_clone_f)(str *hname, str *name);
 typedef int (*ht_api_del_cell_f)(str *hname, str *name);
 
 typedef int (*ht_api_set_cell_expire_f)(
-		str *hname, str *name, int type, int_str *val);
+		str *hname, str *name, int type, int_str *val, int mode);
 typedef int (*ht_api_get_cell_expire_f)(
 		str *hname, str *name, unsigned int *val);
 

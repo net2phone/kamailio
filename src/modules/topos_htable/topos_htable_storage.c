@@ -87,7 +87,7 @@ static int helper_htable_set_expire(str table, int n)
 
 	LM_DBG("set expire for table=%.*s, key=%.*s, value=%d", table.len, table.s,
 			hkey.len, hkey.s, n);
-	ret = _tps_htable_api.set_expire(&table, &hkey, 0, &hval);
+	ret = _tps_htable_api.set_expire(&table, &hkey, 0, &hval, 1);
 	if(ret < 0) {
 		LM_ERR("failed to set expire, using htable module api\n");
 		return -1;

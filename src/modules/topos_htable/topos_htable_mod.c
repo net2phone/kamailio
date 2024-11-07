@@ -95,7 +95,7 @@ static int mod_init(void)
 	}
 
 	/* create topos_dialog and topos_transaction hash tables using htable module api */
-	if(_tps_htable_api.table_spec("topos_dialog=>size=4;autoexpire=7200;")
+	if(_tps_htable_api.table_spec("topos_dialog=>size=4;autoexpire=7200;dmqreplicate=1;")
 			< 0) {
 		LM_ERR("failed table spec for topos_dialog hash table\n");
 		return -1;
