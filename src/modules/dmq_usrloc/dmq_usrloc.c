@@ -28,6 +28,7 @@
 #include "../usrloc/ul_callback.h"
 #include "../../modules/sl/sl.h"
 #include "../../core/mod_fix.h"
+#include "../../modules/dmq/bind_dmq.h"
 
 #include "usrloc_sync.h"
 
@@ -45,6 +46,7 @@ str _dmq_usrloc_domain = str_init("location");
 int _dmq_usrloc_delete = 1;
 
 usrloc_api_t dmq_ul;
+dmq_api_t dmq;
 
 MODULE_VERSION
 
@@ -116,6 +118,13 @@ static int mod_init(void)
 			LM_ERR("Error in dmq_usrloc_initialize()\n");
 		}
 	}
+
+	/* bind to dmq module api */
+	if (dmq_load_api(&dmq) < 0) {
+		LM_ERR("Can't bind dmq\n");
+		return -1;
+	}
+
 	return 0;
 }
 
