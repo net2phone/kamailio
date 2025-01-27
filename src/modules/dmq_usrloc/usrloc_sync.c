@@ -373,7 +373,7 @@ static int usrloc_dmq_execute_action(srjson_t *jdoc_action, dmq_node_t *node)
 			str dmq_server_socket = dmq.get_dmq_server_socket();
 			sock = lookup_local_socket(&dmq_server_socket);
 			if(sock == 0) {
-				LM_DBG("dmq server socket %.*s not found ...ignoring\n",
+				LM_DBG("dmq local server socket <%.*s> not found ...ignoring\n",
 						dmq_server_socket.len, dmq_server_socket.s);
 			}
 		} else if(_dmq_usrloc_replicate_socket_info
@@ -439,8 +439,7 @@ static int usrloc_dmq_execute_action(srjson_t *jdoc_action, dmq_node_t *node)
 	ci.ruid = ruid;
 	ci.c = &c;
 	ci.received = received;
-	if(_dmq_usrloc_replicate_socket_info
-			& (DMQ_USRLOC_REPLICATE_SOCKET | DMQ_USRLOC_REPLICATE_SOCKNAME))
+	if(_dmq_usrloc_replicate_socket_info != 0)
 		ci.sock = sock;
 	ci.path = &path;
 	ci.expires = expires;
