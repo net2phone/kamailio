@@ -123,7 +123,7 @@ static int mod_init(void)
 	}
 
 	/* bind to dmq module api */
-	if (dmq_load_api(&dmq) < 0) {
+	if(dmq_load_api(&dmq) < 0) {
 		LM_ERR("Can't bind dmq\n");
 		return -1;
 	}

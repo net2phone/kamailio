@@ -557,6 +557,7 @@ void ping_servers(unsigned int ticks, void *param)
 	}
 }
 
-str get_dmq_server_socket() {
+str get_dmq_server_socket()
+{
 	return dmq_server_socket;
 }
