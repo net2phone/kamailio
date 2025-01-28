@@ -369,14 +369,6 @@ static int usrloc_dmq_execute_action(srjson_t *jdoc_action, dmq_node_t *node)
 			received.s = it->valuestring;
 			received.len = strlen(received.s);
 		} else if(_dmq_usrloc_replicate_socket_info
-				  == DMQ_USRLOC_REPLICATE_SOCKET_LOCAL) {
-			str dmq_server_socket = dmq.get_dmq_server_socket();
-			sock = lookup_local_socket(&dmq_server_socket);
-			if(sock == 0) {
-				LM_DBG("dmq local server socket <%.*s> not found ...ignoring\n",
-						dmq_server_socket.len, dmq_server_socket.s);
-			}
-		} else if(_dmq_usrloc_replicate_socket_info
 						  == DMQ_USRLOC_REPLICATE_SOCKET
 				  && strcmp(it->string, "sock") == 0) {
 			if(parse_phostport(it->valuestring, &host.s, &host.len,
@@ -439,6 +431,14 @@ static int usrloc_dmq_execute_action(srjson_t *jdoc_action, dmq_node_t *node)
 	ci.ruid = ruid;
 	ci.c = &c;
 	ci.received = received;
+	if(_dmq_usrloc_replicate_socket_info == DMQ_USRLOC_REPLICATE_SOCKET_LOCAL) {
+		str dmq_server_socket = dmq.get_dmq_server_socket();
+		sock = lookup_local_socket(&dmq_server_socket);
+		if(sock == 0) {
+			LM_DBG("dmq local server socket <%.*s> not found ...ignoring\n",
+					dmq_server_socket.len, dmq_server_socket.s);
+		}
+	}
 	if(_dmq_usrloc_replicate_socket_info != 0)
 		ci.sock = sock;
 	ci.path = &path;
