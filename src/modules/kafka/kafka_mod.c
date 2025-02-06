@@ -67,7 +67,7 @@ static int w_kafka_send_key(
  */
 stat_var *total_messages;
 stat_var *total_messages_err;
-int child_init_ok = 0;
+int mod_init_ok = 0;
 int init_without_kafka = 0;
 int log_without_overflow = 0;
 int metadata_timeout = 2000;
@@ -134,21 +134,9 @@ static int mod_init(void)
 	}
 #endif
 
-	return 0;
-}
-
-static int child_init(int rank)
-{
-	/* skip child init for non-worker process ranks */
-	/* if (rank==PROC_INIT || rank==PROC_MAIN || rank==PROC_TCP_MAIN) */
-	/* We execute kfk_init in PROC_MAIN so it cleans messages, etc right
-	   when destroying the module. */
-	if(rank == PROC_INIT || rank == PROC_TCP_MAIN)
-		return 0;
-
-	child_init_ok = 1;
+	mod_init_ok = 1;
 	if(kfk_init(brokers_param)) {
-		child_init_ok = 0;
+		mod_init_ok = 0;
 		if(init_without_kafka) {
 			LM_ERR("Failed to initialize Kafka - continue\n");
 		} else {
@@ -156,6 +144,27 @@ static int child_init(int rank)
 			return -1;
 		}
 	}
+
+	return 0;
+}
+
+static int child_init(int rank)
+{
+	if(rank != PROC_MAIN)
+		return 0;
+
+	/* call init once again for kfk_topic_list_configure */
+	mod_init_ok = 1;
+	if(kfk_init(brokers_param)) {
+		mod_init_ok = 0;
+		if(init_without_kafka) {
+			LM_ERR("Failed to initialize Kafka - continue\n");
+		} else {
+			LM_ERR("Failed to initialize Kafka\n");
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
