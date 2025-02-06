@@ -22,7 +22,7 @@ export WOLFSSL_INTERNAL=no
 # tlsa
 export KTLS_INCLUDE_TLSA=yes
 export LIBSSL_STATIC_SRCLIB=yes
-export LIBSSL_STATIC_SRCPATH=/usr/$(LIBDIR)
+export LIBSSL_STATIC_SRCPATH=/usr/lib/x86_64-linux-gnu/
 
 # Modules not in the "main" kamailio package:
 EXCLUDED_MODULES =
@@ -88,6 +88,7 @@ PACKAGE_GROUPS += mqtt
 PACKAGE_GROUPS += secsipid
 PACKAGE_GROUPS += lwsc
 PACKAGE_GROUPS += microhttpd
+PACKAGE_GROUPS += kafka
 
 # Module groups to be packaged onto kamailio-extra-modules.
 EXTRA_GROUPS += ev
@@ -246,7 +247,7 @@ binary-common:
 	dh_fixperms
 	dh_makeshlibs
 	dh_installdeb
-	dh_shlibdeps
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info
 	dh_gencontrol
 	dh_md5sums
 	dh_builddeb
