@@ -67,7 +67,7 @@ static int w_kafka_send_key(
  */
 stat_var *total_messages;
 stat_var *total_messages_err;
-int mod_init_ok = 0;
+int child_init_ok = 0;
 int init_without_kafka = 0;
 int log_without_overflow = 0;
 int metadata_timeout = 2000;
@@ -134,29 +134,19 @@ static int mod_init(void)
 	}
 #endif
 
-	mod_init_ok = 1;
-	if(kfk_init(brokers_param)) {
-		mod_init_ok = 0;
-		if(init_without_kafka) {
-			LM_ERR("Failed to initialize Kafka - continue\n");
-		} else {
-			LM_ERR("Failed to initialize Kafka\n");
-			return -1;
-		}
-	}
-
 	return 0;
 }
 
 static int child_init(int rank)
 {
-	if(rank != PROC_MAIN)
+	/* call kfk_init() only for timer processes and routing processes */
+	/* Note that only these processes will be able to send kafka messages */
+	if(rank != PROC_TIMER && rank <= PROC_MAIN)
 		return 0;
 
-	/* call init once again for kfk_topic_list_configure */
-	mod_init_ok = 1;
+	child_init_ok = 1;
 	if(kfk_init(brokers_param)) {
-		mod_init_ok = 0;
+		child_init_ok = 0;
 		if(init_without_kafka) {
 			LM_ERR("Failed to initialize Kafka - continue\n");
 		} else {

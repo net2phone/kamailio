@@ -39,7 +39,7 @@
 
 extern stat_var *total_messages;
 extern stat_var *total_messages_err;
-extern int mod_init_ok;
+extern int child_init_ok;
 extern int init_without_kafka;
 extern int log_without_overflow;
 extern int metadata_timeout;
@@ -107,7 +107,7 @@ gen_lock_t *stats_lock = NULL;	/**< Lock to protect shared statistics data. */
  *
  * First node (mandatory) is the general one with NULL topic.
  * Next nodes are topic dependant ones and are optional.
- * This way because general node is created in kfk_stats_init in mod_init is
+ * This way because general node is created in kfk_stats_init in child_init is
  * shared among every Kamailio process.
  */
 static kfk_stats_t *stats_general;
@@ -886,8 +886,8 @@ int kfk_message_send(str *topic_name, str *message, str *key)
 	rd_kafka_resp_err_t err = RD_KAFKA_RESP_ERR__STATE;
 	rd_kafka_topic_t *rkt = kfk_topic_get(topic_name);
 
-	if(!mod_init_ok) {
-		LM_ERR("kafka module is unusable: mod init NOT ok! Skip sending "
+	if(!child_init_ok) {
+		LM_ERR("kafka module is unusable: child init NOT ok! Skip sending "
 			   "message, message lost!");
 
 		kfk_stats_add(topic_name, err);
