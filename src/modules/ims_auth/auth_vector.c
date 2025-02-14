@@ -40,6 +40,8 @@ auth_vector *auth_vector_make_local(uint8_t k[16], uint8_t op[16], int opIsOPc,
 	uint8_t ak[6];
 	uint8_t authenticate[16 + 6 + 2 + 8];
 
+	int i = 0;
+
 	// f0 - generate random
 	f0(rand);
 
@@ -58,7 +60,7 @@ auth_vector *auth_vector_make_local(uint8_t k[16], uint8_t op[16], int opIsOPc,
 	// AUTN = SQN ^ AK || AMF || MAC-A
 	// Authenticate = RAND || AUTN
 	memcpy(authenticate, rand, 16);
-	for(int i = 0; i < 6; i++)
+	for(i = 0; i < 6; i++)
 		authenticate[16 + i] = sqn[i] ^ ak[i];
 	memcpy(authenticate + 22, amf, 2);
 	memcpy(authenticate + 24, mac_a, 8);
@@ -80,15 +82,17 @@ auth_vector *auth_vector_make_local(uint8_t k[16], uint8_t op[16], int opIsOPc,
 
 
 int auth_vector_resync_local(uint8_t sqnMSout[6], auth_vector *av,
-		uint8_t auts[14], uint8_t k[16], uint8_t op[16], int opIsOPc)
+		uint8_t auts[14], uint8_t k[16], uint8_t op[16], int opIsOPc,
+		uint8_t amf[2])
 {
 	uint8_t rand[16];
 	uint8_t op_c[16];
 	uint8_t ak[6];
-	uint8_t amf[2];
 	uint8_t sqnMS[6];
 	uint8_t mac_s[8];
 	uint8_t xmac_s[8];
+
+	int i = 0;
 
 	if(!av->is_locally_generated) {
 		LM_ERR("auth_vector is not locally generated - let the HSS handle "
@@ -114,7 +118,7 @@ int auth_vector_resync_local(uint8_t sqnMSout[6], auth_vector *av,
 	f5star(ak, k, op_c, rand);
 
 	// Unpack the AUTS = (SQN_MS ^ AK) || MAC-S
-	for(int i = 0; i < 6; i++)
+	for(i = 0; i < 6; i++)
 		sqnMS[i] = auts[i] ^ ak[i];
 	memcpy(mac_s, auts + 6, 8);
 
@@ -135,7 +139,8 @@ int auth_vector_resync_local(uint8_t sqnMSout[6], auth_vector *av,
 
 void sqn_increment(uint8_t sqn[6])
 {
-	for(int i = 5; i >= 0; i--) {
+	int i = 0;
+	for(i = 5; i >= 0; i--) {
 		if(sqn[i] == 0xFF) {
 			sqn[i] = 0;
 		} else {

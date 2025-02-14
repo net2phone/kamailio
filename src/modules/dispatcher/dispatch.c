@@ -57,6 +57,7 @@
 #include "../../core/script_cb.h"
 #include "../../core/kemi.h"
 #include "../../core/fmsg.h"
+#include "../../core/rand/ksrxrand.h"
 
 #include "ds_ht.h"
 #include "api.h"
@@ -713,7 +714,7 @@ err:
 /**
  *
  */
-int add_dest2list(int id, str uri, int flags, int priority, str *attrs,
+ds_dest_t *add_dest2list(int id, str uri, int flags, int priority, str *attrs,
 		int list_idx, int *setn, int dload, ds_latency_stats_t *latency_stats)
 {
 	ds_dest_t *dp = NULL;
@@ -722,8 +723,9 @@ int add_dest2list(int id, str uri, int flags, int priority, str *attrs,
 	ds_dest_t *dp1 = NULL;
 
 	dp = pack_dest(uri, flags, priority, attrs, dload);
-	if(!dp)
-		goto err;
+	if(!dp) {
+		goto error;
+	}
 
 	if(latency_stats != NULL) {
 		dp->latency_stats.stdev = latency_stats->stdev;
@@ -739,7 +741,7 @@ int add_dest2list(int id, str uri, int flags, int priority, str *attrs,
 	sp = ds_avl_insert(&ds_lists[list_idx], id, setn);
 	if(!sp) {
 		LM_ERR("no more memory.\n");
-		goto err;
+		goto error;
 	}
 	sp->nr++;
 
@@ -766,8 +768,8 @@ int add_dest2list(int id, str uri, int flags, int priority, str *attrs,
 
 	LM_DBG("dest [%d/%d] <%.*s>\n", sp->id, sp->nr, dp->uri.len, dp->uri.s);
 
-	return 0;
-err:
+	return dp;
+error:
 	if(dp != NULL) {
 		if(dp->uri.s != NULL)
 			shm_free(dp->uri.s);
@@ -776,7 +778,7 @@ err:
 		shm_free(dp);
 	}
 
-	return -1;
+	return NULL;
 }
 
 
@@ -789,7 +791,7 @@ void shuffle_uint100array(unsigned int *arr)
 	if(arr == NULL)
 		return;
 	for(j = 0; j < 100; j++) {
-		k = j + (kam_rand() % (100 - j));
+		k = j + (ksr_xrand() % (100 - j));
 		t = arr[j];
 		arr[j] = arr[k];
 		arr[k] = t;
@@ -806,7 +808,7 @@ void shuffle_char100array(char *arr)
 	if(arr == NULL)
 		return;
 	for(j = 0; j < 100; j++) {
-		k = j + (kam_rand() % (100 - j));
+		k = j + (ksr_xrand() % (100 - j));
 		t = arr[j];
 		arr[j] = arr[k];
 		arr[k] = t;
@@ -1112,7 +1114,7 @@ int ds_load_list(char *lfile)
 		}
 		if(add_dest2list(id, uri, flags, priority, &attrs, *ds_next_idx, &setn,
 				   0, latency_stats)
-				!= 0) {
+				== NULL) {
 			LM_WARN("unable to add destination %.*s to set %d -- skipping\n",
 					uri.len, uri.s, id);
 			if(ds_load_mode == 1) {
@@ -1372,7 +1374,7 @@ int ds_load_db(void)
 		}
 		if(add_dest2list(id, uri, flags, priority, &attrs, *ds_next_idx, &setn,
 				   0, latency_stats)
-				!= 0) {
+				== NULL) {
 			dest_errs++;
 			LM_WARN("unable to add destination %.*s to set %d -- skipping\n",
 					uri.len, uri.s, id);
@@ -2613,7 +2615,7 @@ int ds_manage_routes(sip_msg_t *msg, ds_select_state_t *rstate)
 			}
 			break;
 		case DS_ALG_RANDOM: /* 6 - random selection */
-			hash = kam_rand();
+			hash = ksr_xrand();
 			break;
 		case DS_ALG_HASHPV: /* 7 - hash on PV value */
 			if(ds_hash_pvar(msg, &hash) != 0) {
@@ -2865,14 +2867,16 @@ next_dst:
 void ds_add_dest_cb(ds_set_t *node, int i, void *arg)
 {
 	int setn;
+	ds_dest_t *ndst = NULL;
 
-	if(add_dest2list(node->id, node->dlist[i].uri, node->dlist[i].flags,
-			   node->dlist[i].priority, &node->dlist[i].attrs.body,
-			   *ds_next_idx, &setn, node->dlist[i].dload,
-			   &node->dlist[i].latency_stats)
-			!= 0) {
+	ndst = add_dest2list(node->id, node->dlist[i].uri, node->dlist[i].flags,
+			node->dlist[i].priority, &node->dlist[i].attrs.body, *ds_next_idx,
+			&setn, node->dlist[i].dload, &node->dlist[i].latency_stats);
+	if(ndst == NULL) {
 		LM_WARN("failed to add destination in group %d - %.*s\n", node->id,
 				node->dlist[i].uri.len, node->dlist[i].uri.s);
+	} else {
+		memcpy(&ndst->ocdata, &node->dlist[i].ocdata, sizeof(ds_ocdata_t));
 	}
 	return;
 }
@@ -2893,7 +2897,7 @@ int ds_add_dst(int group, str *address, int flags, int priority, str *attrs)
 	// add new destination
 	if(add_dest2list(group, *address, flags, priority, attrs, *ds_next_idx,
 			   &setn, 0, NULL)
-			!= 0) {
+			== NULL) {
 		LM_WARN("unable to add destination %.*s to set %d", address->len,
 				address->s, group);
 		if(ds_load_mode == 1) {
@@ -2921,7 +2925,10 @@ error:
 /* callback for removing nodes based on setid & address */
 void ds_filter_dest_cb(ds_set_t *node, int i, void *arg)
 {
-	struct ds_filter_dest_cb_arg *filter_arg = (typeof(filter_arg))arg;
+	ds_dest_t *ndst = NULL;
+	struct ds_filter_dest_cb_arg *filter_arg;
+
+	filter_arg = (typeof(filter_arg))arg;
 
 	if(node->id == filter_arg->setid
 			&& node->dlist[i].uri.len == filter_arg->dest->uri.len
@@ -2930,13 +2937,16 @@ void ds_filter_dest_cb(ds_set_t *node, int i, void *arg)
 					   == 0)
 		return;
 
-	if(add_dest2list(node->id, node->dlist[i].uri, node->dlist[i].flags,
-			   node->dlist[i].priority, &node->dlist[i].attrs.body,
-			   *ds_next_idx, filter_arg->setn, node->dlist[i].dload,
-			   &node->dlist[i].latency_stats)
-			!= 0) {
+	ndst = add_dest2list(node->id, node->dlist[i].uri, node->dlist[i].flags,
+			node->dlist[i].priority, &node->dlist[i].attrs.body, *ds_next_idx,
+			filter_arg->setn, node->dlist[i].dload,
+			&node->dlist[i].latency_stats);
+
+	if(ndst == NULL) {
 		LM_WARN("failed to add destination in group %d - %.*s\n", node->id,
 				node->dlist[i].uri.len, node->dlist[i].uri.s);
+	} else {
+		memcpy(&ndst->ocdata, &node->dlist[i].ocdata, sizeof(ds_ocdata_t));
 	}
 	return;
 }

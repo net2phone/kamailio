@@ -66,7 +66,7 @@ static cmd_export_t cmds[] = {
 static param_export_t params[] = {
 	{"force_outbound_flag", PARAM_INT, &ob_force_flag},
 	{"force_no_outbound_flag", PARAM_INT, &ob_force_no_flag},
-	{"flow_token_secret", PARAM_STRING, &flow_token_secret},
+	{"flow_token_secret", PARAM_STR, &flow_token_secret},
 	{0, 0, 0}
 };
 
@@ -86,7 +86,7 @@ struct module_exports exports = {
 
 static void mod_init_openssl(void)
 {
-	if(flow_token_secret.s) {
+	if(flow_token_secret.s && flow_token_secret.len > 0) {
 		assert(ob_key.len == SHA_DIGEST_LENGTH);
 		LM_DBG("flow_token_secret mod param set. use persistent ob_key");
 #if OPENSSL_VERSION_NUMBER < 0x030000000L
@@ -180,15 +180,25 @@ int encode_flow_token(str *flow_token, struct receive_info *rcv)
 		return -1;
 	}
 
+	/* By encoding the bind address into the flow token as the destination
+	   address, we make sure that we'll still be able to find the socket when
+	   decoding it even if there's an haproxy in front */
+	struct ip_addr dst_ip = rcv->dst_ip;
+	unsigned short dst_port = rcv->dst_port;
+	if(rcv->bind_address) {
+		dst_ip = rcv->bind_address->address;
+		dst_port = rcv->bind_address->port_no;
+	}
+
 	/* Encode protocol information */
 	unenc_flow_token[pos++] =
-			(rcv->dst_ip.af == AF_INET6 ? 0x80 : 0x00) | rcv->proto;
+			(dst_ip.af == AF_INET6 ? 0x80 : 0x00) | rcv->proto;
 
 	/* Encode destination address */
-	for(i = 0; i < (rcv->dst_ip.af == AF_INET6 ? 16 : 4); i++)
-		unenc_flow_token[pos++] = rcv->dst_ip.u.addr[i];
-	unenc_flow_token[pos++] = (rcv->dst_port >> 8) & 0xff;
-	unenc_flow_token[pos++] = rcv->dst_port & 0xff;
+	for(i = 0; i < (dst_ip.af == AF_INET6 ? 16 : 4); i++)
+		unenc_flow_token[pos++] = dst_ip.u.addr[i];
+	unenc_flow_token[pos++] = (dst_port >> 8) & 0xff;
+	unenc_flow_token[pos++] = dst_port & 0xff;
 
 	/* Encode source address */
 	for(i = 0; i < (rcv->src_ip.af == AF_INET6 ? 16 : 4); i++)
