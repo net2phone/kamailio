@@ -3930,7 +3930,10 @@ void ds_ping_set(ds_set_t *node)
 
 	for(j = 0; j < node->nr; j++) {
 		/* skip addresses set in disabled state by admin */
-		if((node->dlist[j].flags & (DS_DISABLED_DST | DS_NODNSARES_DST)) != 0)
+		if((node->dlist[j].flags & DS_DISABLED_DST) != 0)
+			continue;
+		/* skip addresses with no-DNS-A flag */
+		if((node->dlist[j].flags & DS_NODNSARES_DST) != 0)
 			continue;
 		/* If the Flag of the entry has "Probing set, send a probe:	*/
 		if(ds_ping_result_helper(node, j)) {
