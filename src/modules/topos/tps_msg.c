@@ -78,6 +78,20 @@ int tps_skip_rw(char *s, int len)
 	return 0;
 }
 
+static void print_via(sip_msg_t *msg) {
+	hdr_field_t *hdr;
+        via_body_t *via;
+        int vlen;
+
+	for(hdr = msg->h_via1; hdr; hdr = next_sibling_hdr(hdr)) {
+                for(via = (struct via_body *)hdr->parsed; via; via = via->next) {
+                        vlen = tps_skip_rw(via->name.s, via->bsize);
+			LM_ERR("HERE VIA: %.*s", vlen, via->name.s);
+		}
+	}
+
+}
+
 /**
  *
  */
@@ -863,6 +877,90 @@ int tps_reappend_route(sip_msg_t *msg, tps_data_t *ptsd, str *hbody, int rev)
 	return 0;
 }
 
+int tps_dlg_recursive_load(sip_msg_t *msg, tps_data_t *pmtsd, tps_data_t *pstsd, int steps) {
+	uint32_t direction = TPS_DIR_DOWNSTREAM;
+	int ret = 0;
+	int j = 0;
+	char *ptr;
+	char *contact, *contact_ptr;
+
+	ret = tps_storage_load_dialog(msg, pmtsd, pstsd);
+	LM_ERR("steps=%d  ret=%d", steps, ret);
+	LM_ERR("pstsd->a_uuid=%.*s pmtsd->a_uuid=%.*s", pstsd->a_uuid.len, pstsd->a_uuid.s, pmtsd->a_uuid.len, pmtsd->a_uuid.s);
+	LM_ERR("pstsd->x_context=%.*s tps_context=%.*s", pstsd->x_context.len, pstsd->x_context.s, _tps_context_param.len, _tps_context_param.s);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/*
+	// no load problems
+	if (ret == 0) {
+		;
+
+	// load problems on initial call => big problem
+	} else if (steps == 0) {
+		return -1;
+
+	// load problems on recursive call => not that big problem, use previous loaded pstsd
+	} else {
+		return 0;
+	}
+	*/
+
+	// found topos entry
+	if (strncmp(pstsd->x_context.s, _tps_context_param.s, _tps_context_param.len) == 0) {
+		return 0;
+
+	// not found topos entry - try search it recursively
+	} else {
+		// detect direction - via from-tag
+		if(tps_dlg_detect_direction(msg, pstsd, &direction) < 0) {
+			LM_ERR("break here direction");
+			return -1;
+		}
+
+		// alloc aux contact ptr
+		if(direction == TPS_DIR_DOWNSTREAM) {
+			contact = pkg_malloc(pstsd->b_contact.len);
+			memcpy(contact, pstsd->b_contact.s, pstsd->b_contact.len);
+		} else {
+			if(direction == TPS_DIR_UPSTREAM) {
+				contact = pkg_malloc(pstsd->a_contact.len);
+				memcpy(contact, pstsd->a_contact.s, pstsd->a_contact.len);
+			} else {
+				contact = pkg_malloc(pstsd->b_contact.len);
+				memcpy(contact, pstsd->b_contact.s, pstsd->b_contact.len);
+			}
+		}
+		contact_ptr = contact;
+
+		j=0;
+		LM_ERR("before 2'nd while loop");
+		while((ptr = strsep(&contact, ":@")) != NULL) {
+			LM_ERR("ptr=%s", ptr);
+			if (j == 1) {
+				// free key
+				pkg_free(pmtsd->a_uuid.s);
+
+				// re-alloc key
+				pmtsd->a_uuid.len = strlen(ptr);
+				pmtsd->a_uuid.s = pkg_malloc(pmtsd->a_uuid.len);
+				memcpy(pmtsd->a_uuid.s, ptr, pmtsd->a_uuid.len);
+				LM_ERR("pmstd.a_uuid=%.*s", pmtsd->a_uuid.len, pmtsd->a_uuid.s);
+				break;
+			}
+			j++;
+		}
+		LM_ERR("after 2'nd while loop");
+
+		// free aux contact ptr
+		pkg_free(contact_ptr);
+
+		steps++;
+		return tps_dlg_recursive_load(msg, pmtsd, pstsd, steps);
+	}
+}
+
 /**
  *
  */
@@ -870,6 +968,9 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 {
 	tps_data_t mtsd;
 	tps_data_t stsd;
+	tps_data_t stsd_tmp;
+	tps_data_t mtsd_tmp;
+	tps_data_t *stsd_ptr = NULL;
 	str lkey;
 	str nuri;
 	uint32_t direction = TPS_DIR_DOWNSTREAM;
@@ -885,11 +986,13 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 	}
 
 	memset(&mtsd, 0, sizeof(tps_data_t));
+	memset(&mtsd_tmp, 0, sizeof(tps_data_t));
 	memset(&stsd, 0, sizeof(tps_data_t));
+	memset(&stsd_tmp, 0, sizeof(tps_data_t));
 
 	tps_unmask_callid(msg);
 
-	if(tps_pack_message(msg, &mtsd) < 0) {
+	if(tps_pack_message(msg, &mtsd) < 0)  {
 		LM_ERR("failed to extract and pack the headers\n");
 		return -1;
 	}
@@ -907,18 +1010,42 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 
 	tps_storage_lock_get(&lkey);
 
+	// do 1 initial load
 	if(tps_storage_load_dialog(msg, &mtsd, &stsd) < 0) {
 		goto error;
 	}
+	stsd_ptr = &stsd;
+
+	// do recursive load
+	if (strncmp(stsd.x_context.s, _tps_context_param.s, _tps_context_param.len) != 0) {
+		LM_ERR("recursive load dialog start");
+
+		// alloc key
+		mtsd_tmp.a_uuid.len = mtsd.a_uuid.len;
+		mtsd_tmp.a_uuid.s = pkg_malloc(mtsd_tmp.a_uuid.len);
+		memcpy(mtsd_tmp.a_uuid.s, mtsd.a_uuid.s, mtsd_tmp.a_uuid.len);
+
+		ret = tps_dlg_recursive_load(msg, &mtsd_tmp, &stsd_tmp, 0);
+		if (ret == 0) {
+			LM_ERR("recursive load dialog success => use stsd_tmp");
+			stsd_ptr = &stsd_tmp;
+		} else {
+			LM_ERR("recursive load dialog failed");
+		}
+
+		// free key
+		pkg_free(mtsd_tmp.a_uuid.s);
+	}
+
 	metid = get_cseq(msg)->method_id;
 	if((metid
 			   & (METHOD_BYE | METHOD_INFO | METHOD_PRACK | METHOD_UPDATE
 					   | METHOD_NOTIFY))
-			&& stsd.b_contact.len <= 0) {
+			&& (*stsd_ptr).b_contact.len <= 0) {
 		/* no B-side contact, look for INVITE transaction record */
 		if(metid & (METHOD_BYE | METHOD_UPDATE | METHOD_NOTIFY)) {
 			/* detect direction - via from-tag */
-			if(tps_dlg_detect_direction(msg, &stsd, &direction) < 0) {
+			if(tps_dlg_detect_direction(msg, &(*stsd_ptr), &direction) < 0) {
 				goto error;
 			}
 		}
@@ -926,14 +1053,14 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 			goto error;
 		}
 		mtsd.direction = direction;
-		memset(&stsd, 0, sizeof(tps_data_t));
-		if(tps_storage_load_branch(msg, &mtsd, &stsd, 1) < 0) {
+		memset(&(*stsd_ptr), 0, sizeof(tps_data_t));
+		if(tps_storage_load_branch(msg, &mtsd, &(*stsd_ptr), 1) < 0) {
 			goto error;
 		}
 		use_branch = 1;
 	} else {
 		/* detect direction - via from-tag */
-		if(tps_dlg_detect_direction(msg, &stsd, &direction) < 0) {
+		if(tps_dlg_detect_direction(msg, &(*stsd_ptr), &direction) < 0) {
 			goto error;
 		}
 		mtsd.direction = direction;
@@ -942,12 +1069,12 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 	tps_storage_lock_release(&lkey);
 
 	if(use_branch && direction == TPS_DIR_DOWNSTREAM) {
-		nuri = stsd.b_contact;
+		nuri = (*stsd_ptr).b_contact;
 	} else {
 		if(direction == TPS_DIR_UPSTREAM) {
-			nuri = stsd.a_contact;
+			nuri = (*stsd_ptr).a_contact;
 		} else {
-			nuri = stsd.b_contact;
+			nuri = (*stsd_ptr).b_contact;
 		}
 	}
 	if(nuri.len > 0) {
@@ -963,54 +1090,54 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 		LM_DBG("use branch for routing information, request from direction "
 			   "%d\n",
 				direction);
-		if(tps_reappend_route(msg, &stsd, &stsd.s_rr,
+		if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).s_rr,
 				   (direction == TPS_DIR_UPSTREAM) ? 0 : 1)
 				< 0) {
 			LM_ERR("failed to reappend s-route\n");
 			return -1;
 		}
 		if(direction == TPS_DIR_UPSTREAM) {
-			if(tps_reappend_route(msg, &stsd, &stsd.x_rr, 0) < 0) {
+			if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).x_rr, 0) < 0) {
 				LM_ERR("failed to reappend a-route\n");
 				return -1;
 			}
 		} else {
-			if(tps_reappend_route(msg, &stsd, &stsd.y_rr, 1) < 0) {
+			if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).y_rr, 1) < 0) {
 				LM_ERR("failed to reappend b-route\n");
 				return -1;
 			}
 		}
 	} else {
-		if(tps_reappend_route(msg, &stsd, &stsd.s_rr,
+		if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).s_rr,
 				   (direction == TPS_DIR_UPSTREAM) ? 0 : 1)
 				< 0) {
 			LM_ERR("failed to reappend s-route\n");
 			return -1;
 		}
 		if(direction == TPS_DIR_UPSTREAM) {
-			if(tps_reappend_route(msg, &stsd, &stsd.a_rr, 0) < 0) {
+			if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).a_rr, 0) < 0) {
 				LM_ERR("failed to reappend a-route\n");
 				return -1;
 			}
 		} else {
-			if(tps_reappend_route(msg, &stsd, &stsd.b_rr, 1) < 0) {
+			if(tps_reappend_route(msg, &(*stsd_ptr), &(*stsd_ptr).b_rr, 1) < 0) {
 				LM_ERR("failed to reappend b-route\n");
 				return -1;
 			}
 		}
 	}
 	if(dialog != 0) {
-		tps_append_xuuid(msg, &stsd.a_uuid);
+		tps_append_xuuid(msg, &(*stsd_ptr).a_uuid);
 		if(_tps_rr_update) {
 			if(tps_storage_update_dialog(
-					   msg, &mtsd, &stsd, TPS_DBU_RPLATTRS | TPS_DBU_BRR)
+					   msg, &mtsd, &(*stsd_ptr), TPS_DBU_RPLATTRS | TPS_DBU_BRR)
 					< 0) {
 				goto error;
 			}
 		}
 		if(metid & METHOD_SUBSCRIBE) {
 			if(tps_storage_update_dialog(
-					   msg, &mtsd, &stsd, TPS_DBU_CONTACT | TPS_DBU_TIME)
+					   msg, &mtsd, &(*stsd_ptr), TPS_DBU_CONTACT | TPS_DBU_TIME)
 					< 0) {
 				goto error;
 			}
@@ -1031,14 +1158,20 @@ int tps_response_received(sip_msg_t *msg)
 	tps_data_t mtsd;
 	tps_data_t stsd;
 	tps_data_t btsd;
+	tps_data_t btsd_tmp;
+	tps_data_t stsd_tmp;
+	tps_data_t *stsd_ptr = NULL;
 	str lkey;
 	uint32_t direction = TPS_DIR_DOWNSTREAM;
+	int ret = 0;
 
 	LM_DBG("handling incoming response\n");
 
 	memset(&mtsd, 0, sizeof(tps_data_t));
 	memset(&stsd, 0, sizeof(tps_data_t));
+	memset(&stsd_tmp, 0, sizeof(tps_data_t));
 	memset(&btsd, 0, sizeof(tps_data_t));
+	memset(&btsd_tmp, 0, sizeof(tps_data_t));
 
 	tps_unmask_callid(msg);
 
@@ -1054,12 +1187,36 @@ int tps_response_received(sip_msg_t *msg)
 	}
 	LM_DBG("loaded dialog a_uuid [%.*s]\n", btsd.a_uuid.len,
 			ZSW(btsd.a_uuid.s));
+
+	// do 1 initial load
 	if(tps_storage_load_dialog(msg, &btsd, &stsd) < 0) {
 		goto error;
 	}
+	stsd_ptr = &stsd;
+
+	// do recursive load
+	if (strncmp(stsd.x_context.s, _tps_context_param.s, _tps_context_param.len) != 0) {
+		LM_ERR("recursive load dialog start");
+
+		// alloc key
+		btsd_tmp.a_uuid.len = btsd.a_uuid.len;
+		btsd_tmp.a_uuid.s = pkg_malloc(btsd_tmp.a_uuid.len);
+		memcpy(btsd_tmp.a_uuid.s, btsd.a_uuid.s, btsd_tmp.a_uuid.len);
+
+		ret = tps_dlg_recursive_load(msg, &btsd_tmp, &stsd_tmp, 0);
+		if (ret == 0) {
+			LM_ERR("recursive load dialog success => use stsd_tmp");
+			stsd_ptr = &stsd_tmp;
+		} else {
+			LM_ERR("recursive load dialog failed");
+		}
+
+		// free key
+		pkg_free(btsd_tmp.a_uuid.s);
+	}
 
 	/* detect direction - via from-tag */
-	if(tps_dlg_detect_direction(msg, &stsd, &direction) < 0) {
+	if(tps_dlg_detect_direction(msg, &(*stsd_ptr), &direction) < 0) {
 		goto error;
 	}
 	mtsd.direction = direction;
@@ -1068,7 +1225,7 @@ int tps_response_received(sip_msg_t *msg)
 			< 0) {
 		goto error;
 	}
-	if(tps_storage_update_dialog(msg, &mtsd, &stsd,
+	if(tps_storage_update_dialog(msg, &mtsd, &(*stsd_ptr),
 			   (_tps_rr_update) ? (TPS_DBU_RPLATTRS | TPS_DBU_BRR | TPS_DBU_ARR)
 								: TPS_DBU_RPLATTRS)
 			< 0) {
@@ -1086,7 +1243,7 @@ int tps_response_received(sip_msg_t *msg)
 					& (METHOD_INVITE | METHOD_SUBSCRIBE))) {
 		LM_DBG("%d reply end dialog storage\n",
 				msg->first_line.u.reply.statuscode);
-		tps_storage_end_dialog(msg, &mtsd, &stsd);
+		tps_storage_end_dialog(msg, &mtsd, &(*stsd_ptr));
 	}
 
 	return 0;
