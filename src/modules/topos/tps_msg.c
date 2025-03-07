@@ -885,27 +885,12 @@ int tps_dlg_recursive_load(sip_msg_t *msg, tps_data_t *pmtsd, tps_data_t *pstsd,
 	char *contact, *contact_ptr;
 
 	ret = tps_storage_load_dialog(msg, pmtsd, pstsd);
-	LM_ERR("steps=%d  ret=%d", steps, ret);
+	LM_ERR("=====> START RECURSION steps=%d  ret=%d", steps, ret);
 	LM_ERR("pstsd->a_uuid=%.*s pmtsd->a_uuid=%.*s", pstsd->a_uuid.len, pstsd->a_uuid.s, pmtsd->a_uuid.len, pmtsd->a_uuid.s);
 	LM_ERR("pstsd->x_context=%.*s tps_context=%.*s", pstsd->x_context.len, pstsd->x_context.s, _tps_context_param.len, _tps_context_param.s);
 	if (ret != 0) {
 		return ret;
 	}
-
-	/*
-	// no load problems
-	if (ret == 0) {
-		;
-
-	// load problems on initial call => big problem
-	} else if (steps == 0) {
-		return -1;
-
-	// load problems on recursive call => not that big problem, use previous loaded pstsd
-	} else {
-		return 0;
-	}
-	*/
 
 	// found topos entry
 	if (strncmp(pstsd->x_context.s, _tps_context_param.s, _tps_context_param.len) == 0) {
@@ -915,7 +900,6 @@ int tps_dlg_recursive_load(sip_msg_t *msg, tps_data_t *pmtsd, tps_data_t *pstsd,
 	} else {
 		// detect direction - via from-tag
 		if(tps_dlg_detect_direction(msg, pstsd, &direction) < 0) {
-			LM_ERR("break here direction");
 			return -1;
 		}
 
@@ -923,21 +907,22 @@ int tps_dlg_recursive_load(sip_msg_t *msg, tps_data_t *pmtsd, tps_data_t *pstsd,
 		if(direction == TPS_DIR_DOWNSTREAM) {
 			contact = pkg_malloc(pstsd->b_contact.len);
 			memcpy(contact, pstsd->b_contact.s, pstsd->b_contact.len);
+			LM_ERR("contact = %.*s\n", pstsd->b_contact.len, pstsd->b_contact.s);
 		} else {
 			if(direction == TPS_DIR_UPSTREAM) {
 				contact = pkg_malloc(pstsd->a_contact.len);
 				memcpy(contact, pstsd->a_contact.s, pstsd->a_contact.len);
+				LM_ERR("contact = %.*s\n", pstsd->a_contact.len, pstsd->a_contact.s);
 			} else {
 				contact = pkg_malloc(pstsd->b_contact.len);
 				memcpy(contact, pstsd->b_contact.s, pstsd->b_contact.len);
+				LM_ERR("contact = %.*s\n", pstsd->b_contact.len, pstsd->b_contact.s);
 			}
 		}
 		contact_ptr = contact;
 
 		j=0;
-		LM_ERR("before 2'nd while loop");
 		while((ptr = strsep(&contact, ":@")) != NULL) {
-			LM_ERR("ptr=%s", ptr);
 			if (j == 1) {
 				// free key
 				pkg_free(pmtsd->a_uuid.s);
@@ -951,12 +936,12 @@ int tps_dlg_recursive_load(sip_msg_t *msg, tps_data_t *pmtsd, tps_data_t *pstsd,
 			}
 			j++;
 		}
-		LM_ERR("after 2'nd while loop");
 
 		// free aux contact ptr
 		pkg_free(contact_ptr);
 
 		steps++;
+
 		return tps_dlg_recursive_load(msg, pmtsd, pstsd, steps);
 	}
 }
