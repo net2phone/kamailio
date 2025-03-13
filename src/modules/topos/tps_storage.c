@@ -240,6 +240,7 @@ int tps_storage_fill_contact(
 		LM_ERR("failed to parse the uri\n");
 		return -1;
 	}
+						LM_ERR("puri host=%.*s\n", puri.host.len, puri.host.s);
 
 	contact_len = sv.len;
 	if(_tps_contact_host.len) {
@@ -291,6 +292,7 @@ int tps_storage_fill_contact(
 	}
 	if(ctmode == TPS_CONTACT_MODE_RURIUSER
 			|| ctmode == TPS_CONTACT_MODE_XAVPUSER) {
+						LM_ERR("HERE1");
 		/* create new URI parameter for Contact header */
 		if(ctmode == TPS_CONTACT_MODE_RURIUSER) {
 			if(dir == TPS_DIR_DOWNSTREAM) {
@@ -426,6 +428,7 @@ int tps_storage_fill_contact(
 		td->cp += uuid->len;
 
 	} else {
+						LM_ERR("HERE2");
 		/* create new user part for Contact header URI */
 		if(dir == TPS_DIR_DOWNSTREAM) {
 			*td->cp = 'b';
@@ -474,10 +477,10 @@ int tps_storage_fill_contact(
 	td->cp++;
 	if(dir == TPS_DIR_DOWNSTREAM) {
 		td->bs_contact.len = td->cp - td->bs_contact.s;
-		LM_DBG("td->bs %.*s\n", td->bs_contact.len, td->bs_contact.s);
+		LM_ERR("td->bs %.*s\n", td->bs_contact.len, td->bs_contact.s);
 	} else {
 		td->as_contact.len = td->cp - td->as_contact.s;
-		LM_DBG("td->as %.*s\n", td->as_contact.len, td->as_contact.s);
+		LM_ERR("td->as %.*s\n", td->as_contact.len, td->as_contact.s);
 	}
 	return 0;
 }
