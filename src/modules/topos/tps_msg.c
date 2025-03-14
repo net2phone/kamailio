@@ -59,6 +59,7 @@ extern str _tps_context_value;
 
 str _sr_hname_xbranch = str_init("P-SR-XBranch");
 str _sr_hname_xuuid = str_init("P-SR-XUID");
+str _sr_hname_xrecursive = str_init("P-SR-XRECURSIVE");
 
 unsigned int _tps_methods_nocontact = METHOD_CANCEL | METHOD_BYE | METHOD_PRACK;
 unsigned int _tps_methods_noinitial = 0;
@@ -752,6 +753,49 @@ int tps_get_xbranch(sip_msg_t *msg, str *hbody)
 	return -1;
 }
 
+int tps_append_xrecursive(sip_msg_t *msg, str *hbody)
+{
+	if(tps_add_headers(msg, &_sr_hname_xrecursive, hbody, 0) < 0) {
+		LM_ERR("failed to add xrecursive header [%.*s]/%d\n", hbody->len, hbody->s,
+				hbody->len);
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
+ *
+ */
+int tps_remove_xrecursive(sip_msg_t *msg)
+{
+	return tps_remove_name_headers(msg, &_sr_hname_xrecursive);
+}
+
+/**
+ *
+ */
+int tps_get_xrecursive(sip_msg_t *msg, str *hbody)
+{
+	hdr_field_t *hf;
+	if(parse_headers(msg, HDR_EOH_F, 0) < 0) {
+		return -1;
+	}
+
+	for(hf = msg->headers; hf; hf = hf->next) {
+		if(_sr_hname_xrecursive.len == hf->name.len
+				&& strncasecmp(_sr_hname_xrecursive.s, hf->name.s, hf->name.len)
+						   == 0) {
+			break;
+		}
+	}
+	if(hf != NULL) {
+		*hbody = hf->body;
+		return 0;
+	}
+	return -1;
+}
+
 
 /**
  *
@@ -958,6 +1002,7 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 	tps_data_t *ptsd=NULL;
 	str lkey;
 	str nuri;
+	str is_recursive={"yes", 3};
 	uint32_t direction = TPS_DIR_DOWNSTREAM;
 	int ret;
 	int use_branch = 0;
@@ -1015,6 +1060,7 @@ int tps_request_received(sip_msg_t *msg, int dialog)
 		if (ret == 0) {
 			LM_ERR("recursive load dialog success => use stsd_tmp");
 			ptsd = &stsd_tmp;
+			tps_append_xrecursive(msg, &is_recursive);
 		} else {
 			LM_ERR("recursive load dialog failed");
 		}
@@ -1257,6 +1303,7 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 	uint32_t direction = TPS_DIR_DOWNSTREAM;
 	int ret = 0;
 	int is_recursive = 0;
+	str aux_recursive;
 
 	LM_DBG("handling outgoing request (%d, %d)\n", dialog, local);
 
@@ -1288,15 +1335,22 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 			}
 			return 0;
 		}
+		if(tps_get_xrecursive(msg, &aux_recursive) == 0) {
+			is_recursive = 1;
+		} else {
+			is_recursive = 0;
+		}
+
 		mtsd.a_uuid = xuuid;
 		tps_remove_xuuid(msg);
+		tps_remove_xrecursive(msg);
 	}
 
 	lkey = msg->callid->body;
 
 	tps_storage_lock_get(&lkey);
 
-	                                LM_ERR("req sent before load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", mtsd.a_contact.len, mtsd.a_contact.s, mtsd.b_contact.len, mtsd.b_contact.s, mtsd.as_contact.len, mtsd.as_contact.s, mtsd.bs_contact.len, mtsd.bs_contact.s, mtsd.a_uuid.len, mtsd.a_uuid.s);
+	                                LM_ERR("req sent MTSD before load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", mtsd.a_contact.len, mtsd.a_contact.s, mtsd.b_contact.len, mtsd.b_contact.s, mtsd.as_contact.len, mtsd.as_contact.s, mtsd.bs_contact.len, mtsd.bs_contact.s, mtsd.a_uuid.len, mtsd.a_uuid.s);
 	if(dialog != 0) {
 		// do 1 initial load
 		if(tps_storage_load_dialog(msg, &mtsd, &stsd) < 0) {
@@ -1304,6 +1358,20 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 		}
 		ptsd = &stsd;
 
+		if (is_recursive) {
+				LM_ERR("WAS RECURSIVEEEEE => before update mtsd");
+			tps_storage_record(msg, &mtsd, 0, direction); 
+				LM_ERR("WAS RECURSIVEEEEE => after update mtsd");
+
+				/*
+			if(tps_storage_update_dialog(msg, ptsd, ptsd, TPS_DBU_ALL) < 0) {
+				goto error;
+			}
+			*/
+			ptsd = &mtsd;
+		}
+
+			/*
 		// do recursive load
 		if (strncmp(stsd.x_context.s, _tps_context_param.s, _tps_context_param.len) != 0) {
 			LM_ERR("recursive load dialog start");
@@ -1317,7 +1385,6 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 			if (ret == 0) {
 				LM_ERR("recursive load dialog success => use stsd_tmp");
 				ptsd = &stsd_tmp;
-				is_recursive = 1;
 			} else {
 				LM_ERR("recursive load dialog failed");
 			}
@@ -1325,6 +1392,7 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 			// free key
 			pkg_free(mtsd_tmp.a_uuid.s);
 		}
+		*/
 
 		/* detect direction - via from-tag */
 		if(tps_dlg_detect_direction(msg, ptsd, &direction) < 0) {
@@ -1334,6 +1402,7 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 	}
 
 	if(tps_storage_load_branch(msg, &mtsd, &btsd, 0) != 0) {
+		
 		if(tps_storage_record(msg, &mtsd, dialog, direction) < 0) {
 			goto error;
 		}
@@ -1345,8 +1414,8 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 	if(ptsd == NULL)
 		ptsd = &mtsd;
 
-	                                LM_ERR("req sent after load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", mtsd.a_contact.len, mtsd.a_contact.s, mtsd.b_contact.len, mtsd.b_contact.s, mtsd.as_contact.len, mtsd.as_contact.s, mtsd.bs_contact.len, mtsd.bs_contact.s, mtsd.a_uuid.len, mtsd.a_uuid.s);
-	                                LM_ERR("req sent after load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", ptsd->a_contact.len, ptsd->a_contact.s, ptsd->b_contact.len, ptsd->b_contact.s, ptsd->as_contact.len, ptsd->as_contact.s, ptsd->bs_contact.len, ptsd->bs_contact.s, ptsd->a_uuid.len, ptsd->a_uuid.s);
+	                                LM_ERR("req sent MTSD after load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", mtsd.a_contact.len, mtsd.a_contact.s, mtsd.b_contact.len, mtsd.b_contact.s, mtsd.as_contact.len, mtsd.as_contact.s, mtsd.bs_contact.len, mtsd.bs_contact.s, mtsd.a_uuid.len, mtsd.a_uuid.s);
+	                                LM_ERR("req sent STSD after load a_contact=%.*s b_contact=%.*s as_contact=%.*s bs_contact=%.*s uuid=%.*s\n", ptsd->a_contact.len, ptsd->a_contact.s, ptsd->b_contact.len, ptsd->b_contact.s, ptsd->as_contact.len, ptsd->as_contact.s, ptsd->bs_contact.len, ptsd->bs_contact.s, ptsd->a_uuid.len, ptsd->a_uuid.s);
 	/* local generated requests */
 	if(local) {
 		/* ACK and CANCEL go downstream */
@@ -1380,7 +1449,7 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 			goto error;
 		}
 		if (is_recursive) {
-			if(tps_storage_update_dialog(msg, &mtsd, ptsd, TPS_DBU_CONTACT | TPS_DBU_TIME) < 0) {
+			if(tps_storage_update_dialog(msg, ptsd, ptsd, TPS_DBU_CONTACT | TPS_DBU_TIME) < 0) {
 				goto error;
 			}
 		}
