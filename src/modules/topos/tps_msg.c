@@ -1228,6 +1228,7 @@ int tps_response_received(sip_msg_t *msg)
 	}
 	ptsd = &stsd;
 
+	/*
 	// do recursive load
 	if (strncmp(stsd.x_context.s, _tps_context_param.s, _tps_context_param.len) != 0) {
 		LM_ERR("recursive load dialog start");
@@ -1248,6 +1249,7 @@ int tps_response_received(sip_msg_t *msg)
 		// free key
 		pkg_free(btsd_tmp.a_uuid.s);
 	}
+	*/
 
 	/* detect direction - via from-tag */
 	if(tps_dlg_detect_direction(msg, &(*ptsd), &direction) < 0) {
@@ -1448,11 +1450,13 @@ int tps_request_sent(sip_msg_t *msg, int dialog, int local)
 				< 0) {
 			goto error;
 		}
+		/*
 		if (is_recursive) {
 			if(tps_storage_update_dialog(msg, ptsd, ptsd, TPS_DBU_CONTACT | TPS_DBU_TIME) < 0) {
 				goto error;
 			}
 		}
+		*/
 	}
 
 done:
@@ -1525,6 +1529,7 @@ int tps_response_sent(sip_msg_t *msg)
 	}
 	ptsd = &stsd;
 
+	/*
 	// do recursive load
 	if (strncmp(stsd.x_context.s, _tps_context_param.s, _tps_context_param.len) != 0) {
 		LM_ERR("recursive load dialog start");
@@ -1545,6 +1550,7 @@ int tps_response_sent(sip_msg_t *msg)
 		// free key
 		pkg_free(btsd_tmp.a_uuid.s);
 	}
+	*/
 	tps_storage_lock_release(&lkey);
 
 	/* detect direction - via from-tag */
