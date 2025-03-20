@@ -660,8 +660,7 @@ int default_resp_callback_f(
 	int nodes_recv;
 	str_list_t *slp;
 
-	LM_DBG("default_callback_f triggered [%p %d %p]\n", msg, code,
-			param);
+	LM_DBG("default_callback_f triggered [%p %d %p]\n", msg, code, param);
 
 	/* detect if node did not repond with 200 OK and move it to inactive state */
 	if(code != 200) {
