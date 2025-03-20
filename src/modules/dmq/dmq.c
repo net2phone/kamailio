@@ -67,7 +67,8 @@ int dmq_multi_notify = 0;
 static sip_uri_t dmq_notification_uri = {0};
 int dmq_ping_interval = 60;
 int dmq_remove_inactive = 1;
-int dmq_fail_threshold = 0;
+int dmq_fail_count_enabled = 0;
+int dmq_fail_count_threshold = 0;
 
 /* TM bind */
 struct tm_binds _dmq_tmb = {0};
@@ -126,7 +127,8 @@ static param_export_t params[] = {
 	{"multi_notify", INT_PARAM, &dmq_multi_notify},
 	{"worker_usleep", INT_PARAM, &dmq_worker_usleep},
 	{"remove_inactive", INT_PARAM, &dmq_remove_inactive},
-	{"fail_threshold", INT_PARAM, &dmq_fail_threshold},
+	{"fail_count_enabled", INT_PARAM, &dmq_fail_count_enabled},
+	{"fail_count_threshold", INT_PARAM, &dmq_fail_count_threshold},
 	{0, 0, 0}
 };
 

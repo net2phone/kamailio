@@ -611,8 +611,10 @@ int notification_resp_callback_f(
 
 	LM_DBG("notification_callback_f triggered [%p %d %p]\n", msg, code, param);
 	if(code == 200) {
-		/* reset node fail counter */
-		reset_dmq_node_fail_count(dmq_node_list, node);
+		if(dmq_fail_count_enabled) {
+			/* reset node fail counter */
+			reset_dmq_node_fail_count(dmq_node_list, node);
+		}
 
 		/* be sure that the node that answered is in active state */
 		update_dmq_node_status(dmq_node_list, node, DMQ_NODE_ACTIVE);
@@ -623,12 +625,21 @@ int notification_resp_callback_f(
 			run_init_callbacks();
 		}
 	} else if(code == 408) {
-		/* update node fail counter; returns updated fail counter */
-		fails = update_dmq_node_fail_count(dmq_node_list, node);
+		if(dmq_fail_count_enabled) {
+			/* update node fail counter; returns updated fail counter */
+			fails = update_dmq_node_fail_count(dmq_node_list, node);
 
-		/* put the node in not active state */
-		if(fails > fail_threshold && node->status == DMQ_NODE_ACTIVE) {
-			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			/* put the node in not active state */
+			if(fails > dmq_fail_count_threshold
+					&& node->status == DMQ_NODE_ACTIVE) {
+				update_dmq_node_status(
+						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			}
+
+			LM_WARN("notification_callback_f triggered fail code=%d fails=%d "
+					"fail_threshold=%d host=%.*s port=%.*s\n",
+					code, fails, dmq_fail_count_threshold, node->uri.host.len,
+					node->uri.host.s, node->uri.port.len, node->uri.port.s);
 		}
 
 		if(!dmq_remove_inactive) {
@@ -659,12 +670,21 @@ int notification_resp_callback_f(
 			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_DISABLED);
 		}
 	} else {
-		/* update node fail counter; returns updated fail counter */
-		fails = update_dmq_node_fail_count(dmq_node_list, node);
+		if(dmq_fail_count_enabled) {
+			/* update node fail counter; returns updated fail counter */
+			fails = update_dmq_node_fail_count(dmq_node_list, node);
 
-		/* put the node in not active state */
-		if(fails > fail_threshold && node->status == DMQ_NODE_ACTIVE) {
-			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			/* put the node in not active state */
+			if(fails > dmq_fail_count_threshold
+					&& node->status == DMQ_NODE_ACTIVE) {
+				update_dmq_node_status(
+						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			}
+
+			LM_WARN("notification_callback_f triggered fail code=%d fails=%d "
+					"fail_threshold=%d host=%.*s port=%.*s\n",
+					code, fails, dmq_fail_count_threshold, node->uri.host.len,
+					node->uri.host.s, node->uri.port.len, node->uri.port.s);
 		}
 	}
 	return 0;
@@ -686,12 +706,16 @@ int default_resp_callback_f(
 	/* detect if node did not repond with 200 OK and move it to not active state */
 	/* this will allow other modules that use DMQ to detect node failures */
 	if(code != 200) {
-		/* update node fail counter; returns updated fail counter */
-		fails = update_dmq_node_fail_count(dmq_node_list, node);
+		if(dmq_fail_count_enabled) {
+			/* update node fail counter; returns updated fail counter */
+			fails = update_dmq_node_fail_count(dmq_node_list, node);
 
-		/* put the node in not active state */
-		if(fails > fail_threshold && node->status == DMQ_NODE_ACTIVE) {
-			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			/* put the node in not active state */
+			if(fails > dmq_fail_count_threshold
+					&& node->status == DMQ_NODE_ACTIVE) {
+				update_dmq_node_status(
+						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			}
 		}
 	}
 
