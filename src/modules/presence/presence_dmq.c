@@ -33,7 +33,6 @@ static int *pres_dmq_recv = 0;
 
 dmq_api_t pres_dmqb;
 dmq_peer_t *pres_dmq_peer = NULL;
-dmq_resp_cback_t pres_dmq_resp_callback = {&pres_dmq_resp_callback_f, 0};
 
 int pres_dmq_send_all_presentities(dmq_node_t *dmq_node);
 int pres_dmq_send_all_subscriptions(dmq_node_t *dmq_node);
@@ -145,10 +144,10 @@ int pres_dmq_send(str *body, dmq_node_t *node)
 	if(node) {
 		LM_DBG("sending dmq message ...\n");
 		pres_dmqb.send_message(pres_dmq_peer, body, node,
-				&pres_dmq_resp_callback, 1, &pres_dmq_content_type);
+				NULL, 1, &pres_dmq_content_type);
 	} else {
 		LM_DBG("sending dmq broadcast...\n");
-		pres_dmqb.bcast_message(pres_dmq_peer, body, 0, &pres_dmq_resp_callback,
+		pres_dmqb.bcast_message(pres_dmq_peer, body, 0, NULL,
 				1, &pres_dmq_content_type);
 	}
 	return 0;

@@ -32,7 +32,6 @@
 
 extern dmq_api_t pres_dmqb;
 extern dmq_peer_t *pres_dmq_peer;
-extern dmq_resp_cback_t pres_dmq_resp_callback;
 
 typedef enum
 {
