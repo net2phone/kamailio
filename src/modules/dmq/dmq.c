@@ -425,11 +425,11 @@ static void dmq_rpc_list_nodes(rpc_t *rpc, void *c)
 		ip_addr2sbuf(&cur->ip_address, ip, IP6_MAX_STR_SIZE);
 		if(rpc->add(c, "{", &h) < 0)
 			goto error;
-		if(rpc->struct_add(h, "SSssSdd", "host", &cur->uri.host, "port",
+		if(rpc->struct_add(h, "SSssSddd", "host", &cur->uri.host, "port",
 				   &cur->uri.port, "proto", get_proto_name(cur->uri.proto),
 				   "resolved_ip", ip, "status", dmq_get_status_str(cur->status),
 				   "last_notification", cur->last_notification, "local",
-				   cur->local)
+				   cur->local, "fail_count", cur->fail_count)
 				< 0)
 			goto error;
 		cur = cur->next;
