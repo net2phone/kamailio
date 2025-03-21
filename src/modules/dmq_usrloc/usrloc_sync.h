@@ -31,8 +31,10 @@
 
 #define DMQ_USRLOC_REPLICATE_SOCKET 1
 #define DMQ_USRLOC_REPLICATE_SOCKNAME 2
+#define DMQ_USRLOC_REPLICATE_SOCKET_LOCAL 3
 
 extern usrloc_api_t dmq_ul;
+extern dmq_api_t dmq;
 
 typedef enum
 {
