@@ -715,6 +715,12 @@ int default_resp_callback_f(
 					&& node->status == DMQ_NODE_ACTIVE) {
 				update_dmq_node_status(
 						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+
+				LM_WARN("default_callback_f triggered fail code=%d fails=%d "
+						"fail_threshold=%d host=%.*s port=%.*s\n",
+						code, fails, dmq_fail_count_threshold,
+						node->uri.host.len, node->uri.host.s,
+						node->uri.port.len, node->uri.port.s);
 			}
 		}
 	}
