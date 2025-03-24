@@ -62,7 +62,7 @@
 	</listitem>
 	<listitem>
 		<para>
-			<emphasis>DMQ_NODE_NOT_ACTIVE</emphasis> "not_active" = node is in dmq node list and responded with response code other than 200 OK, to KDMQ message. Or node is in dmq node list and was freshly added, and did not have a chanse yet to reply to any KDMQ message.
+			<emphasis>DMQ_NODE_NOT_ACTIVE</emphasis> "not_active" = node is in dmq node list and responded with 408 response code, to KDMQ message. Or node is in dmq node list and was freshly added, and did not have a chanse yet to reply to any KDMQ message.
 		</para>
 	</listitem>
 	<listitem>
@@ -354,23 +354,42 @@ modparam("dmq", "fail_count_enabled", 1)
 		</programlisting>
 		</example>
 	</section>
-	<section id="dmq.p.fail_count_threshold">
-		<title><varname>fail_count_threshold</varname>(int)</title>
+	<section id="dmq.p.fail_count_threshold_not_active">
+		<title><varname>fail_count_threshold_not_active</varname>(int)</title>
 		<para>
-			DMQ node status change to "not_active" if fail counts are greater than this threshold value.
+			DMQ node status change from "active" to "not_active" if 408 fail counts are greater than this threshold value.
 
 			Fail counts reset every time a node responds with response code 200 OK, on notification ping.
-			Fail counts increase every time a node responds with response code different than 200 OK,
-			either on notification ping or when other modules use dmq to send message.
+			Fail counts increase every time a node responds with response code 408.
 		</para>
 		<para>
 		<emphasis>Default value is <quote>0</quote>.</emphasis> Move node to "not_active" state on first fail.
 		</para>
 		<example>
-		<title>Set <varname>fail_count_threshold</varname> parameter</title>
+		<title>Set <varname>fail_count_threshold_not_active</varname> parameter</title>
 		<programlisting format="linespecific">
 ...
-modparam("dmq", "fail_count_threshold", 5)
+modparam("dmq", "fail_count_threshold_not_active", 10)
+...
+		</programlisting>
+		</example>
+	</section>
+	<section id="dmq.p.fail_count_threshold_disabled">
+		<title><varname>fail_count_threshold_disabled</varname>(int)</title>
+		<para>
+			DMQ node status change from "not_active" to "disabled" if 408 fail counts are greater than this threshold value.
+
+			Fail counts reset every time a node responds with response code 200 OK, on notification ping.
+			Fail counts increase every time a node responds with response code 408.
+		</para>
+		<para>
+		<emphasis>Default value is <quote>1</quote>.</emphasis> Move node to "disabled" state on second fail.
+		</para>
+		<example>
+		<title>Set <varname>fail_count_threshold_disabled</varname> parameter</title>
+		<programlisting format="linespecific">
+...
+modparam("dmq", "fail_count_threshold_disabled", 15)
 ...
 		</programlisting>
 		</example>

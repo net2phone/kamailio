@@ -444,6 +444,51 @@ int update_dmq_node_status(dmq_node_list_t *list, dmq_node_t *node, int status)
 }
 
 /**
+ * @brief update status of existing dmq node, when 408 timeout received
+ */
+int update_dmq_node_status_on_timeout(dmq_node_t *node)
+{
+	int fails = 0;
+	/* update node fail counter; returns updated fail counter */
+	fails = update_dmq_node_fail_count(dmq_node_list, node);
+
+	LM_WARN("fails=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
+			"host=%.*s port=%.*s status=%d\n",
+			fails, dmq_fail_count_threshold_not_active,
+			dmq_fail_count_threshold_disabled, node->uri.host.len,
+			node->uri.host.s, node->uri.port.len, node->uri.port.s,
+			node->status);
+
+	switch(node->status) {
+		case DMQ_NODE_ACTIVE:
+			/* put the node in not_active state */
+			if(fails > dmq_fail_count_threshold_not_active) {
+				LM_WARN("move node to not_active %.*s:%.*s\n",
+						node->uri.host.len, node->uri.host.s,
+						node->uri.port.len, node->uri.port.s);
+				update_dmq_node_status(
+						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			}
+			break;
+
+		case DMQ_NODE_NOT_ACTIVE:
+			/* put the node in disabled state */
+			if(fails > dmq_fail_count_threshold_disabled) {
+				LM_WARN("move node to disabled %.*s:%.*s\n", node->uri.host.len,
+						node->uri.host.s, node->uri.port.len, node->uri.port.s);
+				update_dmq_node_status(dmq_node_list, node, DMQ_NODE_DISABLED);
+			}
+			break;
+
+		default:
+			break;
+	}
+
+	return 0;
+}
+
+
+/**
  * @brief build dmq node string
  */
 int build_node_str(dmq_node_t *node, char *buf, int buflen)

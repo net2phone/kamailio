@@ -606,10 +606,9 @@ int notification_resp_callback_f(
 {
 	int ret;
 	int nodes_recv;
-	int fails;
 	str_list_t *slp;
 
-	LM_DBG("notification_callback_f triggered [%p %d %p]\n", msg, code, param);
+	LM_DBG("triggered [%p %d %p]\n", msg, code, param);
 	if(code == 200) {
 		if(dmq_fail_count_enabled) {
 			/* reset node fail counter */
@@ -625,33 +624,20 @@ int notification_resp_callback_f(
 			run_init_callbacks();
 		}
 	} else if(code == 408) {
-		if(dmq_fail_count_enabled) {
-			/* update node fail counter; returns updated fail counter */
-			fails = update_dmq_node_fail_count(dmq_node_list, node);
-
-			/* put the node in not active state */
-			if(fails > dmq_fail_count_threshold
-					&& node->status == DMQ_NODE_ACTIVE) {
-				update_dmq_node_status(
-						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
-			}
-
-			LM_WARN("notification_callback_f triggered fail code=%d fails=%d "
-					"fail_threshold=%d host=%.*s port=%.*s\n",
-					code, fails, dmq_fail_count_threshold, node->uri.host.len,
-					node->uri.host.s, node->uri.port.len, node->uri.port.s);
-		}
-
-		if(!dmq_remove_inactive) {
-			/* update status only if fail_count mechanism is disabled
-			 * otherwise, let fail_count reach threshold before update status */
-			if(dmq_fail_count_enabled == 0) {
-				/* put the node in not active state */
-				update_dmq_node_status(
-						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
-			}
+		if(node->status == DMQ_NODE_DISABLED) {
+			/* deleting node - the server did not respond */
+			LM_ERR("deleting server node %.*s because of failed request\n",
+					STR_FMT(&node->orig_uri));
+			ret = del_dmq_node(dmq_node_list, node);
+			LM_DBG("del_dmq_node returned %d\n", ret);
 			return 0;
 		}
+
+		if(dmq_fail_count_enabled) {
+			update_dmq_node_status_on_timeout(node);
+			return 0;
+		}
+
 		/* TODO this probably do not work for dmq_multi_notify */
 		slp = dmq_notification_address_list;
 		while(slp != NULL) {
@@ -664,32 +650,15 @@ int notification_resp_callback_f(
 			}
 			slp = slp->next;
 		}
-		if(node->status == DMQ_NODE_DISABLED) {
-			/* deleting node - the server did not respond */
-			LM_ERR("deleting server node %.*s because of failed request\n",
-					STR_FMT(&node->orig_uri));
-			ret = del_dmq_node(dmq_node_list, node);
-			LM_DBG("del_dmq_node returned %d\n", ret);
+
+		/* update status only if fail_count mechanism is disabled
+		 * otherwise, let fail_count reach threshold before update status */
+		if(!dmq_remove_inactive) {
+			/* put the node in not_active state */
+			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
 		} else {
 			/* put the node in disabled state and wait for the next ping before deleting it */
 			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_DISABLED);
-		}
-	} else {
-		if(dmq_fail_count_enabled) {
-			/* update node fail counter; returns updated fail counter */
-			fails = update_dmq_node_fail_count(dmq_node_list, node);
-
-			/* put the node in not active state */
-			if(fails > dmq_fail_count_threshold
-					&& node->status == DMQ_NODE_ACTIVE) {
-				update_dmq_node_status(
-						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
-			}
-
-			LM_WARN("notification_callback_f triggered fail code=%d fails=%d "
-					"fail_threshold=%d host=%.*s port=%.*s\n",
-					code, fails, dmq_fail_count_threshold, node->uri.host.len,
-					node->uri.host.s, node->uri.port.len, node->uri.port.s);
 		}
 	}
 	return 0;
@@ -701,32 +670,13 @@ int notification_resp_callback_f(
 int default_resp_callback_f(
 		struct sip_msg *msg, int code, dmq_node_t *node, void *param)
 {
-	int ret;
-	int fails;
-	int nodes_recv;
-	str_list_t *slp;
+	LM_DBG("triggered [%p %d %p]\n", msg, code, param);
 
-	LM_DBG("default_callback_f triggered [%p %d %p]\n", msg, code, param);
-
-	/* detect if node did not repond with 200 OK and move it to not active state */
+	/* detect if node did not repond with 200 OK and move it to not_active or disabled state */
 	/* this will allow other modules that use DMQ to detect node failures */
-	if(code != 200) {
+	if(code == 408) {
 		if(dmq_fail_count_enabled) {
-			/* update node fail counter; returns updated fail counter */
-			fails = update_dmq_node_fail_count(dmq_node_list, node);
-
-			/* put the node in not active state */
-			if(fails > dmq_fail_count_threshold
-					&& node->status == DMQ_NODE_ACTIVE) {
-				update_dmq_node_status(
-						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
-
-				LM_WARN("default_callback_f triggered fail code=%d fails=%d "
-						"fail_threshold=%d host=%.*s port=%.*s\n",
-						code, fails, dmq_fail_count_threshold,
-						node->uri.host.len, node->uri.host.s,
-						node->uri.port.len, node->uri.port.s);
-			}
+			update_dmq_node_status_on_timeout(node);
 		}
 	}
 
