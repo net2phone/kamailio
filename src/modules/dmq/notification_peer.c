@@ -643,8 +643,13 @@ int notification_resp_callback_f(
 		}
 
 		if(!dmq_remove_inactive) {
-			/* put the node in not active state */
-			update_dmq_node_status(dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			/* update status only if fail_count mechanism is disabled
+			 * otherwise, let fail_count reach threshold before update status */
+			if(dmq_fail_count_enabled == 0) {
+				/* put the node in not active state */
+				update_dmq_node_status(
+						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+			}
 			return 0;
 		}
 		/* TODO this probably do not work for dmq_multi_notify */
