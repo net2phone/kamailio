@@ -624,7 +624,8 @@ int notification_resp_callback_f(
 			run_init_callbacks();
 		}
 	} else if(code == 408) {
-		LM_WARN("timeout: previous fail_count=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
+		LM_WARN("timeout: previous fail_count=%d fail_threshold_not_active=%d "
+				"fail_threshold_disabled=%d "
 				"host=%.*s port=%.*s\n",
 				node->fail_count, dmq_fail_count_threshold_not_active,
 				dmq_fail_count_threshold_disabled, node->uri.host.len,
@@ -641,7 +642,9 @@ int notification_resp_callback_f(
 
 		if(dmq_fail_count_enabled) {
 			/* alwaws increment fail_count here and possibly update state */
-			update_dmq_node_status_on_timeout(dmq_node_list, node, (DMQ_NODE_ACTIVE|DMQ_NODE_NOT_ACTIVE|DMQ_NODE_DISABLED));
+			update_dmq_node_status_on_timeout(dmq_node_list, node,
+					(DMQ_NODE_ACTIVE | DMQ_NODE_NOT_ACTIVE
+							| DMQ_NODE_DISABLED));
 			return 0;
 		}
 
@@ -681,7 +684,8 @@ int default_resp_callback_f(
 
 	/* if node timeout */
 	if(code == 408) {
-		LM_WARN("timeout: previous fail_count=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
+		LM_WARN("timeout: previous fail_count=%d fail_threshold_not_active=%d "
+				"fail_threshold_disabled=%d "
 				"host=%.*s port=%.*s\n",
 				node->fail_count, dmq_fail_count_threshold_not_active,
 				dmq_fail_count_threshold_disabled, node->uri.host.len,
@@ -690,7 +694,8 @@ int default_resp_callback_f(
 		if(dmq_fail_count_enabled) {
 			/* increment fail_count here and possibly update state, if node in active state */
 			/* this will prevent other modules that use DMQ to affect node state past the not_active state */
-			update_dmq_node_status_on_timeout(dmq_node_list, node, DMQ_NODE_ACTIVE);
+			update_dmq_node_status_on_timeout(
+					dmq_node_list, node, DMQ_NODE_ACTIVE);
 		}
 	}
 
