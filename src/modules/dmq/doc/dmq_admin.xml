@@ -357,10 +357,25 @@ modparam("dmq", "fail_count_enabled", 1)
 	<section id="dmq.p.fail_count_threshold_not_active">
 		<title><varname>fail_count_threshold_not_active</varname>(int)</title>
 		<para>
-			DMQ node status change from "active" to "not_active" if 408 fail counts are greater than this threshold value.
-
-			Fail counts reset every time a node responds with response code 200 OK, on notification ping.
-			Fail counts increase every time a node responds with response code 408.
+			DMQ node status change from "active" to "not_active" if 408 fail counts are greater than this threshold value:
+			This threshold can be reached both via internal DMQ notification ping mechanism, and other modules that use dmq to broadcast messages:
+			<itemizedlist>
+			<listitem>
+				<para>
+			Fail counts reset every time a node responds with response code 200 OK, on response callback of notification ping.
+				</para>
+			</listitem>
+			<listitem>
+				<para>
+			Fail counts increase every time a node responds with response code 408, on response callback of notification ping.
+				</para>
+			</listitem>
+			<listitem>
+				<para>
+				Fail counts increase every time a node responds with response code 408, on response callback of other modules that use dmq, <emphasis>only</emphasis> if node is in "active" state.
+				</para>
+			</listitem>
+			</itemizedlist>
 		</para>
 		<para>
 		<emphasis>Default value is <quote>0</quote>.</emphasis> Move node to "not_active" state on first fail.
@@ -369,7 +384,7 @@ modparam("dmq", "fail_count_enabled", 1)
 		<title>Set <varname>fail_count_threshold_not_active</varname> parameter</title>
 		<programlisting format="linespecific">
 ...
-modparam("dmq", "fail_count_threshold_not_active", 10)
+modparam("dmq", "fail_count_threshold_not_active", 100)
 ...
 		</programlisting>
 		</example>
@@ -378,9 +393,19 @@ modparam("dmq", "fail_count_threshold_not_active", 10)
 		<title><varname>fail_count_threshold_disabled</varname>(int)</title>
 		<para>
 			DMQ node status change from "not_active" to "disabled" if 408 fail counts are greater than this threshold value.
-
-			Fail counts reset every time a node responds with response code 200 OK, on notification ping.
-			Fail counts increase every time a node responds with response code 408.
+			This threshold can be reached only via internal DMQ notification ping mechanism:
+			<itemizedlist>
+			<listitem>
+				<para>
+			Fail counts reset every time a node responds with response code 200 OK, on response callback of notification ping.
+				</para>
+			</listitem>
+			<listitem>
+				<para>
+			Fail counts increase every time a node responds with response code 408, on response callback of notification ping.
+				</para>
+			</listitem>
+			</itemizedlist>
 		</para>
 		<para>
 		<emphasis>Default value is <quote>1</quote>.</emphasis> Move node to "disabled" state on second fail.
@@ -389,7 +414,7 @@ modparam("dmq", "fail_count_threshold_not_active", 10)
 		<title>Set <varname>fail_count_threshold_disabled</varname> parameter</title>
 		<programlisting format="linespecific">
 ...
-modparam("dmq", "fail_count_threshold_disabled", 15)
+modparam("dmq", "fail_count_threshold_disabled", 105)
 ...
 		</programlisting>
 		</example>

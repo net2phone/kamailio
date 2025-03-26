@@ -446,44 +446,44 @@ int update_dmq_node_status(dmq_node_list_t *list, dmq_node_t *node, int status)
 /**
  * @brief update status of existing dmq node, when 408 timeout received
  */
-int update_dmq_node_status_on_timeout(dmq_node_t *node)
+int update_dmq_node_status_on_timeout(dmq_node_list_t *list, dmq_node_t *node, int fail_count_status)
 {
-	int fails = 0;
-	/* update node fail counter; returns updated fail counter */
-	fails = update_dmq_node_fail_count(dmq_node_list, node);
+	dmq_node_t *cur;
+	lock_get(&list->lock);
+	cur = list->nodes;
+	while(cur) {
+		if(cmp_dmq_node(cur, node)) {
+			/* if node has specific status */
+			if (cur->status & fail_count_status) {
+				/* update fail_count*/
+				cur->fail_count++;
 
-	LM_WARN("fails=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
-			"host=%.*s port=%.*s status=%d\n",
-			fails, dmq_fail_count_threshold_not_active,
-			dmq_fail_count_threshold_disabled, node->uri.host.len,
-			node->uri.host.s, node->uri.port.len, node->uri.port.s,
-			node->status);
+				/* update state possibly based on fail_count */
+				/* put the node from not_active to disabled state */
+				if(cur->fail_count > dmq_fail_count_threshold_disabled && cur->status == DMQ_NODE_NOT_ACTIVE) {
+					LM_WARN("move to disabled: updated fail_count=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
+							"host=%.*s port=%.*s\n",
+							cur->fail_count, dmq_fail_count_threshold_not_active,
+							dmq_fail_count_threshold_disabled, node->uri.host.len,
+							node->uri.host.s, node->uri.port.len, node->uri.port.s);
+					cur->status = DMQ_NODE_DISABLED;
 
-	switch(node->status) {
-		case DMQ_NODE_ACTIVE:
-			/* put the node in not_active state */
-			if(fails > dmq_fail_count_threshold_not_active) {
-				LM_WARN("move node to not_active %.*s:%.*s\n",
-						node->uri.host.len, node->uri.host.s,
-						node->uri.port.len, node->uri.port.s);
-				update_dmq_node_status(
-						dmq_node_list, node, DMQ_NODE_NOT_ACTIVE);
+				/* put the node from active to not_active state */
+				} else if(cur->fail_count > dmq_fail_count_threshold_not_active && cur->status == DMQ_NODE_ACTIVE) {
+					LM_WARN("move to not_active: cur->fail_count=%d fail_threshold_not_active=%d fail_threshold_disabled=%d "
+							"host=%.*s port=%.*s\n",
+							cur->fail_count, dmq_fail_count_threshold_not_active,
+							dmq_fail_count_threshold_disabled, node->uri.host.len,
+							node->uri.host.s, node->uri.port.len, node->uri.port.s);
+					cur->status = DMQ_NODE_NOT_ACTIVE;
+				}
 			}
-			break;
-
-		case DMQ_NODE_NOT_ACTIVE:
-			/* put the node in disabled state */
-			if(fails > dmq_fail_count_threshold_disabled) {
-				LM_WARN("move node to disabled %.*s:%.*s\n", node->uri.host.len,
-						node->uri.host.s, node->uri.port.len, node->uri.port.s);
-				update_dmq_node_status(dmq_node_list, node, DMQ_NODE_DISABLED);
-			}
-			break;
-
-		default:
-			break;
+			lock_release(&list->lock);
+			return 1;
+		}
+		cur = cur->next;
 	}
-
+	lock_release(&list->lock);
 	return 0;
 }
 
@@ -529,32 +529,6 @@ int build_node_str(dmq_node_t *node, char *buf, int buflen)
 			dmq_get_status_str(node->status)->len);
 	len += dmq_get_status_str(node->status)->len;
 	return len;
-}
-
-/**
- * @brief update fail counter
- */
-int update_dmq_node_fail_count(dmq_node_list_t *list, dmq_node_t *node)
-{
-	int fails;
-	dmq_node_t *cur;
-	LM_DBG("trying to acquire dmq_node_list->lock\n");
-	lock_get(&list->lock);
-	LM_DBG("acquired dmq_node_list->lock\n");
-	cur = list->nodes;
-	while(cur) {
-		if(cmp_dmq_node(cur, node)) {
-			cur->fail_count++;
-			fails = cur->fail_count;
-			lock_release(&list->lock);
-			LM_DBG("released dmq_node_list->lock\n");
-			return fails;
-		}
-		cur = cur->next;
-	}
-	lock_release(&list->lock);
-	LM_DBG("released dmq_node_list->lock\n");
-	return 0;
 }
 
 /**
