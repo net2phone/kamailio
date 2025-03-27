@@ -147,7 +147,7 @@ error:
  */
 int set_default_dmq_node_params(dmq_node_t *node)
 {
-	node->status = DMQ_NODE_NOT_ACTIVE;
+	node->status = DMQ_NODE_ACTIVE;
 	return 0;
 }
 

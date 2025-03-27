@@ -58,11 +58,12 @@
 	<listitem>
 		<para>
 			<emphasis>DMQ_NODE_ACTIVE</emphasis> "active" = node is in dmq node list and responded with response code 200 OK, to KDMQ message.
+			At startup, all nodes are considered active, regardless of their actual state.
 		</para>
 	</listitem>
 	<listitem>
 		<para>
-			<emphasis>DMQ_NODE_NOT_ACTIVE</emphasis> "not_active" = node is in dmq node list and responded with 408 response code, to KDMQ message. Or node is in dmq node list and was freshly added, and did not have a chanse yet to reply to any KDMQ message.
+			<emphasis>DMQ_NODE_NOT_ACTIVE</emphasis> "not_active" = node is in dmq node list and did not respond to KDMQ message (408 timeout).
 		</para>
 	</listitem>
 	<listitem>
