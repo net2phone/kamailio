@@ -1455,6 +1455,7 @@ static int update_pw_dialogs(
 			if(subs->status == TERMINATED_STATUS) {
 				ps->next = s->next;
 				shm_free(s->contact.s);
+				shm_free(s->record_route.s);
 				shm_free(s);
 				LM_DBG(" deleted terminated dialog from hash table\n");
 			} else

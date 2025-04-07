@@ -327,11 +327,6 @@ subs_t *pres_parse_json_subscription(srjson_t *in)
 		subscription.sockinfo_str.len = pres_default_socket.len;
 	}
 
-//	if(!subscription) {
-//		LM_ERR("no subscription after parsing\n");
-//		return NULL;
-//	}
-
 	return mem_copy_subs(&subscription, PKG_MEM_TYPE);
 }
 
@@ -777,7 +772,7 @@ int pres_dmq_send_all_presentities(dmq_node_t *dmq_node)
 	if(publ_cache_mode == PS_PCACHE_RECORD) {
 		return pres_dmq_cache_send_all_presentities(dmq_node);
 	} else {
-//		return pres_dmq_db_send_all_presentities(dmq_node);
+		// not implemented for db mode
 		return 0;
 	}
 }
@@ -815,7 +810,7 @@ int pres_dmq_send_all_subscriptions(dmq_node_t *dmq_node)
 	if(pres_subs_dbmode != DB_ONLY) {
 		return pres_dmq_cache_send_all_subscriptions(dmq_node);
 	} else {
-//		return pres_dmq_db_send_all_subscriptions(dmq_node);
+		// not implemented for db mode
 		return 0;
 	}
 }

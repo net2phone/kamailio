@@ -754,14 +754,10 @@ int replace_subscription(subs_t *subs)
 				goto error;
 			}
 		}
-		/* for modes that update the subscription synchronously in database, write in db */
-//		if(pres_subs_dbmode == DB_ONLY || pres_subs_dbmode == WRITE_THROUGH) {
-//			/* update in database table */
-//			if(replace_subs_db(subs) < 0) {
-//				LM_ERR("updating subscription in database table\n");
-//				goto error;
-//			}
-//		}
+		/* for modes that update the subscription synchronously in database, */
+		if(pres_subs_dbmode == DB_ONLY || pres_subs_dbmode == WRITE_THROUGH) {
+			LM_WARN("replace subscription in database is not supported\n");
+		}
 	}
 
 	return 0;
@@ -2176,6 +2172,8 @@ void update_db_subs_timer_dbnone(int no_lock)
 
 				if(del_s->contact.s)
 					shm_free(del_s->contact.s);
+				if(del_s->record_route.s)
+					shm_free(del_s->record_route.s);
 				shm_free(del_s);
 				continue;
 			}

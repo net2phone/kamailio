@@ -490,11 +490,6 @@ int ps_cache_delete_presentity_if_dialog_id_exists(
 				if(delete_presentity(&old_presentity, NULL) < 0) {
 					LM_ERR("failed to delete presentity\n");
 				}
-// commented this to remove all matches not only the first one
-//				ps_presentity_list_free(ptlist, 1);
-//				free(db_dialog_id);
-//				db_dialog_id = NULL;
-//				return 1;
 			}
 			free(db_dialog_id);
 			db_dialog_id = NULL;
