@@ -307,10 +307,16 @@ int insert_and_replace_shtable(shtable_t htable, unsigned int hash_code, subs_t 
 				}
 
 				shm_free(rec);
+
+				if(prev_rec) {
+					rec = prev_rec->next;
+				} else {
+					rec = htable[hash_code].entries->next;
+				}
 			} else {
 				prev_rec = rec;
+				rec = rec->next;
 			}
-			rec = rec->next;
 		}
 	}
 
