@@ -3411,7 +3411,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	}
 
 	/* Make a local copy of nodes, under locks */
-	LM_DBG("Copy all nodes...\n");
+	LM_DBG("Copy nodes to pkg...\n");
 	lock_get(rtpp_set_list->rset_head_lock);
 	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
 			rtpp_list = rtpp_list->rset_next) {
@@ -3430,7 +3430,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	lock_release(rtpp_set_list->rset_head_lock);
 
 	/* Ping the nodes, no locks */
-	LM_DBG("Ping all nodes...\n");
+	LM_DBG("Ping %d nodes...\n", total_nodes);
 	for(idx = 0; idx < total_nodes; idx++) {
 		if(!nodes[idx].rn_displayed
 				|| (nodes[idx].rn_disabled
@@ -3445,7 +3445,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	}
 
 	/* Update nodes, under locks */
-	LM_DBG("Update nodes...\n");
+	LM_DBG("Update %d nodes...\n", total_nodes);
 	lock_get(rtpp_set_list->rset_head_lock);
 	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
 			rtpp_list = rtpp_list->rset_next) {
@@ -3469,6 +3469,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	lock_release(rtpp_set_list->rset_head_lock);
 
 	/* Free local copy of nodes, no locks */
+	LM_DBG("Free %d nodes from pkg...\n", total_nodes);
 	for(idx = 0; idx < total_nodes; idx++) {
 		pkg_free(nodes[idx].rn_address);
 		pkg_free(nodes[idx].rn_url.s);
