@@ -189,6 +189,7 @@ static int_str rcv_avp_name;
 
 static char *natping_socket = NULL;
 static int udpping_from_path = 0;
+static int ignore_path = 0;
 static int sdp_oldmediaip = 1;
 static int raw_sock = -1;
 static unsigned int raw_ip = 0;
@@ -273,6 +274,7 @@ static param_export_t params[] = {
 	{"natping_socket",        PARAM_STRING, &natping_socket        },
 	{"keepalive_timeout",     INT_PARAM, &nh_keepalive_timeout  },
 	{"udpping_from_path",     INT_PARAM, &udpping_from_path     },
+	{"ignore_path",           INT_PARAM, &ignore_path},
 	{"append_sdp_oldmediaip", INT_PARAM, &sdp_oldmediaip        },
 	{"filter_server_id",      INT_PARAM, &nh_filter_srvid },
 	{"nat_addr_mode",         INT_PARAM, &nh_nat_addr_mode },
@@ -2360,7 +2362,7 @@ static void nh_timer(unsigned int ticks, void *timer_idx)
 			dst_uri = &c;
 
 		/* determine the destination */
-		if(path.len && (flags & sipping_flag) != 0) {
+		if(path.len && (flags & sipping_flag) != 0 && !ignore_path) {
 			/* send to first URI in path */
 			if(get_path_dst_uri(&path, &opt) < 0) {
 				LM_ERR("failed to get dst_uri for Path\n");
@@ -2371,7 +2373,7 @@ static void nh_timer(unsigned int ticks, void *timer_idx)
 				LM_ERR("can't parse contact dst_uri\n");
 				continue;
 			}
-		} else if(path.len && udpping_from_path) {
+		} else if(path.len && udpping_from_path && !ignore_path) {
 			path_ip_str = extract_last_path_ip(path);
 			if(path_ip_str == NULL) {
 				LM_ERR("unable to parse path from location\n");
