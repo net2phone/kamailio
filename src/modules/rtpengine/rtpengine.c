@@ -3396,44 +3396,74 @@ static bencode_item_t *rtpp_function_call_ok(bencode_buffer_t *bencbuf,
  */
 static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 {
-	struct rtpp_set *rtpp_list;
-	struct rtpp_node *crt_rtpp;
-	int err = 0;
-	int ret;
+#define MAX_ACTIVE_NODES 64
+	struct rtpp_set *rtpp_list = NULL;
+	struct rtpp_node *crt_rtpp = NULL;
+	struct rtpp_node nodes[MAX_ACTIVE_NODES];
+	int idx = 0;
+	int total_nodes = 0;
 	int rtpp_disabled = 0;
 
 	/* No need to test them while building */
 	if(build_rtpp_socks(1, 0)) {
+		LM_WARN("Skip timer ping. Failed to build sockets!\n");
 		return;
 	}
-	/* Most of this is from rtpengine_rpc_iterate functions maybe split? */
-	LM_DBG("Pinging all enabled rtpengines...\n");
+
+
+	/* Make a local copy of nodes, under locks */
+	LM_DBG("Copy all nodes...\n");
 	lock_get(rtpp_set_list->rset_head_lock);
 	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
 			rtpp_list = rtpp_list->rset_next) {
-
 		lock_get(rtpp_list->rset_lock);
-		for(crt_rtpp = rtpp_list->rn_first; crt_rtpp != NULL;
-				crt_rtpp = crt_rtpp->rn_next) {
+		for(crt_rtpp = rtpp_list->rn_first, total_nodes = 0;
+				crt_rtpp != NULL && total_nodes < MAX_ACTIVE_NODES;
+				crt_rtpp = crt_rtpp->rn_next, total_nodes++) {
+			nodes[total_nodes] = *crt_rtpp;
+		}
+		lock_release(rtpp_list->rset_lock);
+	}
+	lock_release(rtpp_set_list->rset_head_lock);
 
-			if(!crt_rtpp->rn_displayed
-					|| (crt_rtpp->rn_disabled
-							&& crt_rtpp->rn_recheck_ticks
+
+	/* Ping the nodes, with no locks taken */
+	LM_DBG("Ping all nodes...\n");
+	for(idx = 0; idx < total_nodes; idx++) {
+		if(!nodes[idx].rn_displayed
+				|| (nodes[idx].rn_disabled
+						&& nodes[idx].rn_recheck_ticks
+								   == RTPENGINE_MAX_RECHECK_TICKS)) {
+			continue;
+		}
+
+		/* Ping node */
+		crt_rtpp = &nodes[idx];
+		rtpengine_iter_cb_ping(crt_rtpp, rtpp_list, &rtpp_disabled);
+	}
+
+
+	/* Update nodes, under locks */
+	LM_DBG("Update nodes...\n");
+	lock_get(rtpp_set_list->rset_head_lock);
+	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
+			rtpp_list = rtpp_list->rset_next) {
+		lock_get(rtpp_list->rset_lock);
+		for(crt_rtpp = rtpp_list->rn_first, idx = 0;
+				crt_rtpp != NULL && idx < total_nodes;
+				crt_rtpp = crt_rtpp->rn_next, idx++) {
+			if(!nodes[idx].rn_displayed
+					|| (nodes[idx].rn_disabled
+							&& nodes[idx].rn_recheck_ticks
 									   == RTPENGINE_MAX_RECHECK_TICKS)) {
 				continue;
 			}
 
-			/* Ping all available nodes */
-			ret = rtpengine_iter_cb_ping(crt_rtpp, rtpp_list, &rtpp_disabled);
-			if(ret) {
-				err = 1;
-				break;
-			}
+			/* Update node */
+			crt_rtpp->rn_recheck_ticks = nodes[idx].rn_recheck_ticks;
+			crt_rtpp->rn_disabled = nodes[idx].rn_disabled;
 		}
 		lock_release(rtpp_list->rset_lock);
-
-		if(err)
-			break;
 	}
 	lock_release(rtpp_set_list->rset_head_lock);
 }
