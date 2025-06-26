@@ -3396,10 +3396,10 @@ static bencode_item_t *rtpp_function_call_ok(bencode_buffer_t *bencbuf,
  */
 static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 {
-#define MAX_ACTIVE_NODES 64
+#define MAX_NODES 64
 	struct rtpp_set *rtpp_list = NULL;
 	struct rtpp_node *crt_rtpp = NULL;
-	struct rtpp_node nodes[MAX_ACTIVE_NODES];
+	struct rtpp_node nodes[MAX_NODES];
 	int idx = 0;
 	int total_nodes = 0;
 	int rtpp_disabled = 0;
@@ -3410,7 +3410,6 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		return;
 	}
 
-
 	/* Make a local copy of nodes, under locks */
 	LM_DBG("Copy all nodes...\n");
 	lock_get(rtpp_set_list->rset_head_lock);
@@ -3418,16 +3417,19 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 			rtpp_list = rtpp_list->rset_next) {
 		lock_get(rtpp_list->rset_lock);
 		for(crt_rtpp = rtpp_list->rn_first, total_nodes = 0;
-				crt_rtpp != NULL && total_nodes < MAX_ACTIVE_NODES;
+				crt_rtpp != NULL && total_nodes < MAX_NODES;
 				crt_rtpp = crt_rtpp->rn_next, total_nodes++) {
 			nodes[total_nodes] = *crt_rtpp;
+			nodes[total_nodes].rn_address = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
+			nodes[total_nodes].rn_url.s = (char *)pkg_malloc(sizeof(char) * (crt_rtpp->rn_url.len + 1));
+			strcpy(nodes[total_nodes].rn_address, crt_rtpp->rn_address);
+			strcpy(nodes[total_nodes].rn_url.s, crt_rtpp->rn_url.s);
 		}
 		lock_release(rtpp_list->rset_lock);
 	}
 	lock_release(rtpp_set_list->rset_head_lock);
 
-
-	/* Ping the nodes, with no locks taken */
+	/* Ping the nodes, no locks */
 	LM_DBG("Ping all nodes...\n");
 	for(idx = 0; idx < total_nodes; idx++) {
 		if(!nodes[idx].rn_displayed
@@ -3441,7 +3443,6 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		crt_rtpp = &nodes[idx];
 		rtpengine_iter_cb_ping(crt_rtpp, rtpp_list, &rtpp_disabled);
 	}
-
 
 	/* Update nodes, under locks */
 	LM_DBG("Update nodes...\n");
@@ -3466,6 +3467,12 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		lock_release(rtpp_list->rset_lock);
 	}
 	lock_release(rtpp_set_list->rset_head_lock);
+
+	/* Free local copy of nodes, no locks */
+	for(idx = 0; idx < total_nodes; idx++) {
+		pkg_free(nodes[idx].rn_address);
+		pkg_free(nodes[idx].rn_url.s);
+	}
 }
 
 /**
