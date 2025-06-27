@@ -3415,7 +3415,8 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	lock_release(rtpp_no_lock);
 
 	LM_DBG("Alloc %d nodes to pkg...\n", total_nodes);
-	nodes = (struct rtpp_node*)pkg_malloc(sizeof(struct rtpp_node) * total_nodes);
+	nodes = (struct rtpp_node *)pkg_malloc(
+			sizeof(struct rtpp_node) * total_nodes);
 
 	/* Make a local copy of nodes, under locks */
 	LM_DBG("Copy %d nodes to pkg...\n", total_nodes);
@@ -3427,8 +3428,10 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 				crt_rtpp != NULL && idx < total_nodes;
 				crt_rtpp = crt_rtpp->rn_next, idx++) {
 			nodes[idx] = *crt_rtpp;
-			nodes[idx].rn_address = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
-			nodes[idx].rn_url.s = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_url.s) + 1));
+			nodes[idx].rn_address = (char *)pkg_malloc(
+					sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
+			nodes[idx].rn_url.s = (char *)pkg_malloc(
+					sizeof(char) * (strlen(crt_rtpp->rn_url.s) + 1));
 			strcpy(nodes[idx].rn_address, crt_rtpp->rn_address);
 			strcpy(nodes[idx].rn_url.s, crt_rtpp->rn_url.s);
 		}
@@ -3437,8 +3440,9 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	lock_release(rtpp_set_list->rset_head_lock);
 
 	/* Ping the nodes, no locks */
-	LM_DBG("Ping %d nodes...\n", total_nodes);
+	LM_DBG("Ping nodes...\n");
 	for(idx = 0; idx < total_nodes; idx++) {
+		/* Skip not needed node */
 		if(!nodes[idx].rn_displayed
 				|| (nodes[idx].rn_disabled
 						&& nodes[idx].rn_recheck_ticks
@@ -3447,29 +3451,40 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		}
 
 		/* Ping node */
+		LM_DBG("Ping node %s\n", nodes[idx].rn_url.s);
 		crt_rtpp = &nodes[idx];
 		rtpengine_iter_cb_ping(crt_rtpp, rtpp_list, &rtpp_disabled);
 	}
 
 	/* Update nodes, under locks */
-	LM_DBG("Update %d nodes...\n", total_nodes);
+	LM_DBG("Update nodes...\n");
 	lock_get(rtpp_set_list->rset_head_lock);
 	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
 			rtpp_list = rtpp_list->rset_next) {
 		lock_get(rtpp_list->rset_lock);
-		for(crt_rtpp = rtpp_list->rn_first, idx = 0;
-				crt_rtpp != NULL && idx < total_nodes;
-				crt_rtpp = crt_rtpp->rn_next, idx++) {
-			if(!nodes[idx].rn_displayed
-					|| (nodes[idx].rn_disabled
-							&& nodes[idx].rn_recheck_ticks
-									   == RTPENGINE_MAX_RECHECK_TICKS)) {
-				continue;
-			}
+		for(crt_rtpp = rtpp_list->rn_first; crt_rtpp != NULL;
+				crt_rtpp = crt_rtpp->rn_next) {
+			for(idx = 0; idx < total_nodes; idx++) {
+				/* Skip not needed node */
+				if(!nodes[idx].rn_displayed
+						|| (nodes[idx].rn_disabled
+								&& nodes[idx].rn_recheck_ticks
+										   == RTPENGINE_MAX_RECHECK_TICKS)
+						|| !crt_rtpp->rn_displayed
+						|| (crt_rtpp->rn_disabled
+								&& crt_rtpp->rn_recheck_ticks
+										   == RTPENGINE_MAX_RECHECK_TICKS)) {
+					continue;
+				}
 
-			/* Update node */
-			crt_rtpp->rn_recheck_ticks = nodes[idx].rn_recheck_ticks;
-			crt_rtpp->rn_disabled = nodes[idx].rn_disabled;
+				/* Update node if url match */
+				if(strcmp(crt_rtpp->rn_url.s, nodes[idx].rn_url.s) == 0) {
+					LM_DBG("Update node %s, disabled=%d\n", nodes[idx].rn_url.s,
+							nodes[idx].rn_disabled);
+					crt_rtpp->rn_recheck_ticks = nodes[idx].rn_recheck_ticks;
+					crt_rtpp->rn_disabled = nodes[idx].rn_disabled;
+				}
+			}
 		}
 		lock_release(rtpp_list->rset_lock);
 	}
