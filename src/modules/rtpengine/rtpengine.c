@@ -3396,10 +3396,9 @@ static bencode_item_t *rtpp_function_call_ok(bencode_buffer_t *bencbuf,
  */
 static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 {
-#define MAX_NODES 64
 	struct rtpp_set *rtpp_list = NULL;
 	struct rtpp_node *crt_rtpp = NULL;
-	struct rtpp_node nodes[MAX_NODES];
+	struct rtpp_node *nodes;
 	int idx = 0;
 	int total_nodes = 0;
 	int rtpp_disabled = 0;
@@ -3410,20 +3409,28 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		return;
 	}
 
+	/* Alloc local copy of nodes, no locks */
+	lock_get(rtpp_no_lock);
+	total_nodes = *rtpp_no;
+	lock_release(rtpp_no_lock);
+
+	LM_DBG("Alloc %d nodes to pkg...\n", total_nodes);
+	nodes = (struct rtpp_node*)pkg_malloc(sizeof(struct rtpp_node) * total_nodes);
+
 	/* Make a local copy of nodes, under locks */
-	LM_DBG("Copy nodes to pkg...\n");
+	LM_DBG("Copy %d nodes to pkg...\n", total_nodes);
 	lock_get(rtpp_set_list->rset_head_lock);
 	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
 			rtpp_list = rtpp_list->rset_next) {
 		lock_get(rtpp_list->rset_lock);
-		for(crt_rtpp = rtpp_list->rn_first, total_nodes = 0;
-				crt_rtpp != NULL && total_nodes < MAX_NODES;
-				crt_rtpp = crt_rtpp->rn_next, total_nodes++) {
-			nodes[total_nodes] = *crt_rtpp;
-			nodes[total_nodes].rn_address = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
-			nodes[total_nodes].rn_url.s = (char *)pkg_malloc(sizeof(char) * (crt_rtpp->rn_url.len + 1));
-			strcpy(nodes[total_nodes].rn_address, crt_rtpp->rn_address);
-			strcpy(nodes[total_nodes].rn_url.s, crt_rtpp->rn_url.s);
+		for(crt_rtpp = rtpp_list->rn_first, idx = 0;
+				crt_rtpp != NULL && idx < total_nodes;
+				crt_rtpp = crt_rtpp->rn_next, idx++) {
+			nodes[idx] = *crt_rtpp;
+			nodes[idx].rn_address = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
+			nodes[idx].rn_url.s = (char *)pkg_malloc(sizeof(char) * (strlen(crt_rtpp->rn_url.s) + 1));
+			strcpy(nodes[idx].rn_address, crt_rtpp->rn_address);
+			strcpy(nodes[idx].rn_url.s, crt_rtpp->rn_url.s);
 		}
 		lock_release(rtpp_list->rset_lock);
 	}
@@ -3474,6 +3481,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		pkg_free(nodes[idx].rn_address);
 		pkg_free(nodes[idx].rn_url.s);
 	}
+	pkg_free(nodes);
 }
 
 /**
