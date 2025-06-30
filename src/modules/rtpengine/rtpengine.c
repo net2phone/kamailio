@@ -3399,7 +3399,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	struct rtpp_set *rtpp_list = NULL;
 	struct rtpp_node *crt_rtpp = NULL;
 	struct rtpp_node *nodes;
-	int idx = 0;
+	int i, idx = 0;
 	int total_nodes = 0;
 	int rtpp_disabled = 0;
 
@@ -3418,6 +3418,13 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	nodes = (struct rtpp_node *)pkg_malloc(
 			sizeof(struct rtpp_node) * total_nodes);
 
+	/* Is pkg available? */
+	if(!nodes) {
+		LM_WARN("Skip timer ping. Not enough pkg for nodes!\n");
+		return;
+	}
+	memset(nodes, 0, sizeof(struct rtpp_node) * total_nodes);
+
 	/* Make a local copy of nodes, under locks */
 	LM_DBG("Copy %d nodes to pkg...\n", total_nodes);
 	lock_get(rtpp_set_list->rset_head_lock);
@@ -3432,6 +3439,24 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 					sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
 			nodes[idx].rn_url.s = (char *)pkg_malloc(
 					sizeof(char) * (strlen(crt_rtpp->rn_url.s) + 1));
+
+			/* Is pkg available? */
+			if(!nodes[idx].rn_address || !nodes[idx].rn_url.s) {
+				LM_WARN("Skip timer ping. Not enough pkg for node url or "
+						"address!\n");
+				for(i = 0; i < idx; i++) {
+					pkg_free(nodes[i].rn_address);
+					pkg_free(nodes[i].rn_url.s);
+				}
+				if(nodes[idx].rn_address) {
+					pkg_free(nodes[idx].rn_address);
+				}
+				if(nodes[idx].rn_url.s) {
+					pkg_free(nodes[idx].rn_url.s);
+				}
+				pkg_free(nodes);
+				return;
+			}
 			strcpy(nodes[idx].rn_address, crt_rtpp->rn_address);
 			strcpy(nodes[idx].rn_url.s, crt_rtpp->rn_url.s);
 		}
