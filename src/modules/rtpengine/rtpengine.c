@@ -3399,7 +3399,7 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	struct rtpp_set *rtpp_list = NULL;
 	struct rtpp_node *crt_rtpp = NULL;
 	struct rtpp_node *nodes;
-	int i, idx = 0;
+	int idx = 0;
 	int total_nodes = 0;
 	int rtpp_disabled = 0;
 
@@ -3444,18 +3444,9 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 			if(!nodes[idx].rn_address || !nodes[idx].rn_url.s) {
 				LM_WARN("Skip timer ping. Not enough pkg for node url or "
 						"address!\n");
-				for(i = 0; i < idx; i++) {
-					pkg_free(nodes[i].rn_address);
-					pkg_free(nodes[i].rn_url.s);
-				}
-				if(nodes[idx].rn_address) {
-					pkg_free(nodes[idx].rn_address);
-				}
-				if(nodes[idx].rn_url.s) {
-					pkg_free(nodes[idx].rn_url.s);
-				}
-				pkg_free(nodes);
-				return;
+				lock_release(rtpp_list->rset_lock);
+				lock_release(rtpp_set_list->rset_head_lock);
+				goto free_nodes;
 			}
 			strcpy(nodes[idx].rn_address, crt_rtpp->rn_address);
 			strcpy(nodes[idx].rn_url.s, crt_rtpp->rn_url.s);
@@ -3489,15 +3480,19 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 		lock_get(rtpp_list->rset_lock);
 		for(crt_rtpp = rtpp_list->rn_first; crt_rtpp != NULL;
 				crt_rtpp = crt_rtpp->rn_next) {
+			/* Skip not needed node */
+			if(!crt_rtpp->rn_displayed
+					|| (crt_rtpp->rn_disabled
+							&& crt_rtpp->rn_recheck_ticks
+									   == RTPENGINE_MAX_RECHECK_TICKS)) {
+				continue;
+			}
+
 			for(idx = 0; idx < total_nodes; idx++) {
 				/* Skip not needed node */
 				if(!nodes[idx].rn_displayed
 						|| (nodes[idx].rn_disabled
 								&& nodes[idx].rn_recheck_ticks
-										   == RTPENGINE_MAX_RECHECK_TICKS)
-						|| !crt_rtpp->rn_displayed
-						|| (crt_rtpp->rn_disabled
-								&& crt_rtpp->rn_recheck_ticks
 										   == RTPENGINE_MAX_RECHECK_TICKS)) {
 					continue;
 				}
@@ -3515,11 +3510,16 @@ static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
 	}
 	lock_release(rtpp_set_list->rset_head_lock);
 
+free_nodes:
 	/* Free local copy of nodes, no locks */
 	LM_DBG("Free %d nodes from pkg...\n", total_nodes);
 	for(idx = 0; idx < total_nodes; idx++) {
-		pkg_free(nodes[idx].rn_address);
-		pkg_free(nodes[idx].rn_url.s);
+		if(nodes[idx].rn_address) {
+			pkg_free(nodes[idx].rn_address);
+		}
+		if(nodes[idx].rn_url.s) {
+			pkg_free(nodes[idx].rn_url.s);
+		}
 	}
 	pkg_free(nodes);
 }
