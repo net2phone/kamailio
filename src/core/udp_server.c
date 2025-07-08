@@ -757,7 +757,7 @@ int udp_rcv_loop()
 			}
 		} else {
 			/* receive_msg must free buf too!*/
-			receive_msg(buf, len, &rcvi);
+			receive_msg(buf, len, &rcvi, 0);
 		}
 
 		/* skip: do other stuff */

@@ -127,7 +127,7 @@ int raw_udp4_rcv_loop(int rsock, int port1, int port2)
 		}
 		tmp = ip_addr2a(&ri.src_ip);
 		LM_DBG("received from %s:\n[%.*s]\n", tmp, len, p);
-		receive_msg(p, len, &ri);
+		receive_msg(p, len, &ri, 0);
 	}
 error:
 	return -1;

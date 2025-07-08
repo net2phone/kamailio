@@ -161,7 +161,7 @@ void sworker_exec_task(void *param)
 	}
 
 	_sworker_active = 1;
-	receive_msg(buf, len, &rcvi);
+	receive_msg(buf, len, &rcvi, _sworker_active);
 	_sworker_active = 0;
 }
 

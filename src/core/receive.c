@@ -292,7 +292,7 @@ int ksr_evrt_pre_routing(sip_msg_t *msg)
  *  WARNING: buf must be 0 terminated (buf[len]=0) or some things might
  * break (e.g.: modules/textops)
  */
-int receive_msg(char *buf, unsigned int len, receive_info_t *rcv_info)
+int receive_msg(char *buf, unsigned int len, receive_info_t *rcv_info, int sworker_active)
 {
 	struct sip_msg *msg = NULL;
 	struct run_act_ctx ctx;
@@ -336,7 +336,9 @@ int receive_msg(char *buf, unsigned int len, receive_info_t *rcv_info)
 	inb.len = len;
 	evp.data = (void *)&inb;
 	evp.rcv = rcv_info;
-	sr_event_exec(SREV_NET_DATA_IN, &evp);
+	if (!sworker_active) {
+		sr_event_exec(SREV_NET_DATA_IN, &evp);
+	}
 	len = inb.len;
 
 	msg = pkg_malloc(sizeof(struct sip_msg));
