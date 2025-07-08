@@ -230,7 +230,7 @@ int hepv2_received(char *buf, unsigned int len, struct receive_info *ri)
 
 	hep_payload = buf + hep_offset;
 
-	receive_msg(hep_payload, (unsigned int)(len - hep_offset), ri);
+	receive_msg(hep_payload, (unsigned int)(len - hep_offset), ri, 0);
 
 	return -1;
 }
@@ -514,7 +514,7 @@ int parsing_hepv3_message(char *buf, unsigned int len)
 		else if(hg->proto_t->data == 100)
 			receive_logging_json_msg(payload, payload_len, hg, "logs_capture");
 		else
-			receive_msg(payload, payload_len, &ri);
+			receive_msg(payload, payload_len, &ri, 0);
 	}
 
 done:

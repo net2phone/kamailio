@@ -2534,7 +2534,7 @@ int raw_capture_rcv_loop(int rsock, int port1, int port2, int ipip)
 
 
 			/* and now receive message */
-			receive_msg(buf + offset, len, &ri);
+			receive_msg(buf + offset, len, &ri, 0);
 			if(si)
 				pkg_free(si);
 		}

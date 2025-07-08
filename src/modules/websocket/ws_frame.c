@@ -613,7 +613,7 @@ int ws_frame_receive(sr_event_param_t *evp)
 
 				if(frame.fin) {
 					ret = receive_msg(frame.wsc->frag_buf.s,
-							frame.wsc->frag_buf.len, tcpinfo->rcv);
+							frame.wsc->frag_buf.len, tcpinfo->rcv, 0);
 					wsconn_put(frame.wsc);
 					return ret;
 				}
@@ -646,7 +646,7 @@ int ws_frame_receive(sr_event_param_t *evp)
 					wsconn_put(frame.wsc);
 
 					return receive_msg(frame.payload_data, frame.payload_len,
-							tcpinfo->rcv);
+							tcpinfo->rcv, 0);
 				} else {
 					memcpy(frame.wsc->frag_buf.s, frame.payload_data,
 							frame.payload_len);

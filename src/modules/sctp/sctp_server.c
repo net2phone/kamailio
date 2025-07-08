@@ -2549,7 +2549,7 @@ int sctp_rcv_loop()
 #else  /* SCTP_CONN_REUSE */
 		ri.proto_received1 = 0;
 #endif /* SCTP_CONN_REUSE */
-		receive_msg(buf, len, &ri);
+		receive_msg(buf, len, &ri, 0);
 	}
 error:
 	return -1;
