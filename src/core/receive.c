@@ -336,7 +336,9 @@ int receive_msg(char *buf, unsigned int len, receive_info_t *rcv_info)
 	inb.len = len;
 	evp.data = (void *)&inb;
 	evp.rcv = rcv_info;
-	sr_event_exec(SREV_NET_DATA_IN, &evp);
+	if (!(rcv_info->rflags & RECV_F_INTERNAL)) {
+		sr_event_exec(SREV_NET_DATA_IN, &evp);
+	}
 	len = inb.len;
 
 	msg = pkg_malloc(sizeof(struct sip_msg));
