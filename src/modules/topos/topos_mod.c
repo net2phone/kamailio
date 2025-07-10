@@ -62,6 +62,7 @@
 #include "../../core/utils/sruid.h"
 
 #include "../../modules/sanity/api.h"
+#include "../../modules/sworker/api.h"
 
 #include "../topoh/api.h"
 
@@ -135,6 +136,7 @@ str _tps_context_param = STR_NULL;
 str _tps_context_value = STR_NULL;
 
 static sanity_api_t _tps_scb;
+static sworker_api_t _tps_sw;
 
 int tps_msg_received(sr_event_param_t *evp);
 int tps_msg_sent(sr_event_param_t *evp);
@@ -329,6 +331,12 @@ static int mod_init(void)
 		}
 	}
 
+	/* bind the sworker API */
+	if(sworker_load_api(&_tps_sw) != 0) {
+		LM_ERR("cannot bind to sworker API\n");
+		return -1;
+	}
+
 	sr_event_register_cb(SREV_NET_DATA_IN, tps_msg_received);
 	sr_event_register_cb(SREV_NET_DATA_OUT, tps_msg_sent);
 
@@ -515,6 +523,10 @@ int tps_msg_received(sr_event_param_t *evp)
 
 	obuf = (str *)evp->data;
 
+	if (_tps_sw.is_active() < 0) {
+		return 0;
+	}
+
 	if(tps_execute_event_route(NULL, evp, TPS_EVENTRT_INCOMING,
 			   _tps_eventrt_incoming, &_tps_eventrt_incoming_name)
 			== 1) {
@@ -591,6 +603,10 @@ int tps_msg_sent(sr_event_param_t *evp)
 	str nbuf = STR_NULL;
 
 	obuf = (str *)evp->data;
+
+	if (_tps_sw.is_active() < 0) {
+		return 0;
+	}
 
 	if(tps_execute_event_route(NULL, evp, TPS_EVENTRT_OUTGOING,
 			   _tps_eventrt_outgoing, &_tps_eventrt_outgoing_name)

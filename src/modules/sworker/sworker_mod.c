@@ -33,6 +33,8 @@
 #include "../../core/mod_fix.h"
 #include "../../core/async_task.h"
 #include "../../core/kemi.h"
+#include "sworker_mod.h"
+#include "api.h"
 
 MODULE_VERSION
 
@@ -60,6 +62,7 @@ static cmd_export_t cmds[]={
 		fixup_free_spve_null, REQUEST_ROUTE|CORE_ONREPLY_ROUTE},
 	{"sworker_active", (cmd_function)w_sworker_active, 0, 0,
 		0, REQUEST_ROUTE|CORE_ONREPLY_ROUTE},
+	{"bind_sworker", (cmd_function)bind_sworker, 0, 0, 0, 0},
 	{0, 0, 0, 0, 0, 0}
 };
 
@@ -256,7 +259,7 @@ static int w_sworker_task(sip_msg_t *msg, char *pgname, char *p2)
 /**
  *
  */
-static int ki_sworker_active(sip_msg_t *msg)
+int ki_sworker_active(sip_msg_t *msg)
 {
 	if(_sworker_active == 0) {
 		return -1;
