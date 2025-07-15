@@ -980,6 +980,7 @@ int pres_dmq_send_all_presentities(dmq_node_t *dmq_node)
 
 int pres_dmq_cache_send_all_subscriptions(dmq_node_t *dmq_node)
 {
+	int need_to_sleep = 0;
 	int i;
 	int n = 0;
 	int sn = 0;
@@ -1061,20 +1062,22 @@ int pres_dmq_cache_send_all_subscriptions(dmq_node_t *dmq_node)
 			s = s->next;
 			if(pres_dmq_batch_size > 0 && pres_dmq_batch_usleep > 0 && n >= pres_dmq_batch_size) {
 				n = 0;
-				// as we release lock we can not be sure that current subscription will exist after pause
-				// let store 2 next subs, if no one of them will exist after pause - continue with next slot
-				s_next = s->next;
-				s_after_next = s_next ? s_next->next : NULL;
-
-				lock_release(&subs_htable[i].lock);
-				sleep_us(pres_dmq_batch_usleep);
-
-				lock_get(&subs_htable[i].lock);
-				s = s ? s : (s_next ? s_next : s_after_next);
+				if (s) {
+					if (need_to_sleep) {
+					    LM_WARN("we need to sleep again :(\n");
+					}
+					need_to_sleep = 1;
+					LM_WARN("we need to sleep\n");
+				}
 			}
 		}
 
 		lock_release(&subs_htable[i].lock);
+
+		if (need_to_sleep) {
+			need_to_sleep = 0;
+			sleep_us(pres_dmq_batch_usleep);
+		}
 	}
 
 	return 0;
