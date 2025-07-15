@@ -107,6 +107,11 @@ extern int pres_enable_subs_dmq;
 extern int pres_enable_subs_sync_dmq;
 extern int pres_skip_notify_dmq;
 extern str pres_default_socket;
+extern int pres_dmq_batch_size;
+extern int pres_dmq_batch_msg_pres;
+extern int pres_dmq_batch_msg_subs;
+extern int pres_dmq_batch_msg_size;
+extern int pres_dmq_batch_usleep;
 extern int pres_subs_respond_200;
 
 extern int phtable_size;
