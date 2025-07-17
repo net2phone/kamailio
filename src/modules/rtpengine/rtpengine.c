@@ -221,6 +221,7 @@ static int rtpengine_delete1_f(struct sip_msg *, char *, char *);
 static int rtpengine_manage1_f(struct sip_msg *, char *, char *);
 static int rtpengine_query1_f(struct sip_msg *, char *, char *);
 static int rtpengine_info1_f(struct sip_msg *, char *, char *);
+static void rtpengine_ping_check_timer(unsigned int ticks, void *);
 
 static int w_rtpengine_query_v(sip_msg_t *msg, char *pfmt, char *pvar);
 static int fixup_rtpengine_query_v(void **param, int param_no);
@@ -348,6 +349,7 @@ static str rtpengine_dtmf_event_sock;
 static int rtpengine_dtmf_event_fd;
 int dtmf_event_rt = -1; /* default disabled */
 static int rtpengine_ping_mode = 1;
+static int rtpengine_ping_interval = 60;
 
 /* clang-format off */
 typedef struct rtpp_set_link {
@@ -467,6 +469,7 @@ static param_export_t params[] = {
 	{"rtpengine_allow_op", INT_PARAM, &rtpengine_allow_op},
 	{"control_cmd_tos", INT_PARAM, &control_cmd_tos},
 	{"ping_mode", PARAM_INT, &rtpengine_ping_mode},
+	{"ping_interval", PARAM_INT, &rtpengine_ping_interval},
 	{"db_url", PARAM_STR, &rtpp_db_url},
 	{"table_name", PARAM_STR, &rtpp_table_name},
 	{"setid_col", PARAM_STR, &rtpp_setid_col},
@@ -2148,6 +2151,11 @@ static int mod_init(void)
 		}
 	}
 
+	/* Enable ping timer if interval is positive */
+	if(rtpengine_ping_interval > 0) {
+		register_timer(rtpengine_ping_check_timer, 0, rtpengine_ping_interval);
+	}
+
 	dtmf_event_rt = route_lookup(&event_rt, "rtpengine:dtmf-event");
 	if(dtmf_event_rt >= 0 && event_rt.rlist[dtmf_event_rt] == 0) {
 		dtmf_event_rt = -1; /* disable */
@@ -3381,7 +3389,153 @@ static bencode_item_t *rtpp_function_call_ok(bencode_buffer_t *bencbuf,
 	return ret;
 }
 
+/**
+* @brief Timer function to check the status of rtpengine nodes.
+* Check every node in the set and if it is not responding,
+* mark it as disabled.
+ */
+static void rtpengine_ping_check_timer(unsigned int ticks, void *param)
+{
+	struct rtpp_set *rtpp_list = NULL;
+	struct rtpp_node *crt_rtpp = NULL;
+	struct rtpp_node *nodes;
+	int idx = 0;
+	int total_nodes = 0;
+	int rtpp_disabled = 0;
 
+	/* No need to test them while building */
+	if(build_rtpp_socks(1, 0)) {
+		LM_WARN("Skip timer ping. Failed to build sockets!\n");
+		return;
+	}
+
+	/* Alloc local copy of nodes, no locks */
+	lock_get(rtpp_no_lock);
+	total_nodes = *rtpp_no;
+	lock_release(rtpp_no_lock);
+
+	LM_DBG("Alloc %d nodes to pkg...\n", total_nodes);
+	nodes = (struct rtpp_node *)pkg_malloc(
+			sizeof(struct rtpp_node) * total_nodes);
+
+	/* Is pkg available? */
+	if(!nodes) {
+		LM_WARN("Skip timer ping. Not enough pkg for nodes!\n");
+		return;
+	}
+	memset(nodes, 0, sizeof(struct rtpp_node) * total_nodes);
+
+	/* Make a local copy of nodes, under locks */
+	LM_DBG("Copy %d nodes to pkg...\n", total_nodes);
+	lock_get(rtpp_set_list->rset_head_lock);
+	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
+			rtpp_list = rtpp_list->rset_next) {
+		lock_get(rtpp_list->rset_lock);
+		for(crt_rtpp = rtpp_list->rn_first, idx = 0;
+				crt_rtpp != NULL && idx < total_nodes;
+				crt_rtpp = crt_rtpp->rn_next, idx++) {
+			nodes[idx] = *crt_rtpp;
+			nodes[idx].rn_address = (char *)pkg_malloc(
+					sizeof(char) * (strlen(crt_rtpp->rn_address) + 1));
+			nodes[idx].rn_url.s = (char *)pkg_malloc(
+					sizeof(char) * (strlen(crt_rtpp->rn_url.s) + 1));
+
+			/* Is pkg available? */
+			if(!nodes[idx].rn_address || !nodes[idx].rn_url.s) {
+				LM_WARN("Skip timer ping. Not enough pkg for node url or "
+						"address!\n");
+				lock_release(rtpp_list->rset_lock);
+				lock_release(rtpp_set_list->rset_head_lock);
+				goto free_nodes;
+			}
+			strcpy(nodes[idx].rn_address, crt_rtpp->rn_address);
+			strcpy(nodes[idx].rn_url.s, crt_rtpp->rn_url.s);
+		}
+		lock_release(rtpp_list->rset_lock);
+	}
+	lock_release(rtpp_set_list->rset_head_lock);
+
+	/* Ping the nodes, no locks */
+	LM_DBG("Ping nodes...\n");
+	for(idx = 0; idx < total_nodes; idx++) {
+		/* Skip not needed node */
+		if(!nodes[idx].rn_displayed
+				|| (nodes[idx].rn_disabled
+						&& nodes[idx].rn_recheck_ticks
+								   == RTPENGINE_MAX_RECHECK_TICKS)) {
+			continue;
+		}
+
+		/* Ping node */
+		LM_DBG("Ping node %s\n", nodes[idx].rn_url.s);
+		crt_rtpp = &nodes[idx];
+		rtpengine_iter_cb_ping(crt_rtpp, rtpp_list, &rtpp_disabled);
+	}
+
+	/* Update nodes, under locks */
+	LM_DBG("Update nodes...\n");
+	lock_get(rtpp_set_list->rset_head_lock);
+	for(rtpp_list = rtpp_set_list->rset_first; rtpp_list != NULL;
+			rtpp_list = rtpp_list->rset_next) {
+		lock_get(rtpp_list->rset_lock);
+		for(crt_rtpp = rtpp_list->rn_first; crt_rtpp != NULL;
+				crt_rtpp = crt_rtpp->rn_next) {
+			/* Skip not needed node */
+			if(!crt_rtpp->rn_displayed
+					|| (crt_rtpp->rn_disabled
+							&& crt_rtpp->rn_recheck_ticks
+									   == RTPENGINE_MAX_RECHECK_TICKS)) {
+				continue;
+			}
+
+			for(idx = 0; idx < total_nodes; idx++) {
+				/* Skip not needed node */
+				if(!nodes[idx].rn_displayed
+						|| (nodes[idx].rn_disabled
+								&& nodes[idx].rn_recheck_ticks
+										   == RTPENGINE_MAX_RECHECK_TICKS)) {
+					continue;
+				}
+
+				/* Update node if url match */
+				if(strcmp(crt_rtpp->rn_url.s, nodes[idx].rn_url.s) == 0) {
+					LM_DBG("Update node %s, disabled=%d\n", nodes[idx].rn_url.s,
+							nodes[idx].rn_disabled);
+					crt_rtpp->rn_recheck_ticks = nodes[idx].rn_recheck_ticks;
+					crt_rtpp->rn_disabled = nodes[idx].rn_disabled;
+				}
+			}
+		}
+		lock_release(rtpp_list->rset_lock);
+	}
+	lock_release(rtpp_set_list->rset_head_lock);
+
+free_nodes:
+	/* Free local copy of nodes, no locks */
+	LM_DBG("Free %d nodes from pkg...\n", total_nodes);
+	for(idx = 0; idx < total_nodes; idx++) {
+		if(nodes[idx].rn_address) {
+			pkg_free(nodes[idx].rn_address);
+		}
+		if(nodes[idx].rn_url.s) {
+			pkg_free(nodes[idx].rn_url.s);
+		}
+	}
+	pkg_free(nodes);
+}
+
+/**
+ * @brief Tests the RTP engine node by sending a ping command with some additional logic
+ * to skip it.
+ *
+ * @details Similar to rtpp_test_ping but provides additional logic for handling disabled
+ * nodes, ping intervals, and recheck ticks.
+ *
+ * @param node The RTP engine node to test.
+ * @param isdisabled Flag indicating if the node is currently disabled.
+ * @param force Flag to force the test even if the node is disabled or ping_interval is set.
+ * @return Returns 0 if the node is NOT disabled, 1 otherwise.
+ */
 static int rtpp_test(struct rtpp_node *node, int isdisabled, int force)
 {
 	bencode_buffer_t bencbuf;
@@ -3393,9 +3547,16 @@ static int rtpp_test(struct rtpp_node *node, int isdisabled, int force)
 		LM_DBG("rtpp %s disabled for ever\n", node->rn_url.s);
 		return 1;
 	}
+
 	if(force == 0) {
 		if(isdisabled == 0)
 			return 0;
+		/* If ping_interval is set, the timer will ping and test
+		the rtps. No need to do something during routing.
+		Return the current status.
+		*/
+		if(rtpengine_ping_interval > 0)
+			return isdisabled;
 		if(node->rn_recheck_ticks > get_ticks())
 			return 1;
 	}

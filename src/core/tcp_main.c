@@ -5555,7 +5555,7 @@ void tcp_timer_check_connections(unsigned int ticks, void *param)
 		if(n > 0) {
 			for(i = 0; i < n; i++) {
 				if((con = tcpconn_get(tcpidlist[i], 0, 0, 0, 0))) {
-					LM_CRIT("message processing timeout on connection id: %d "
+					LM_DBG("message processing timeout on connection id: %d "
 							"(state: %d) - "
 							"closing\n",
 							tcpidlist[i], con->state);
