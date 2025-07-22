@@ -798,6 +798,65 @@ void timer_allow_del(void)
 }
 
 
+#define timer_sanity_check(h, tl1, tl2, last_tl1, last_tl2, dir1, dir2)       \
+	(last_tl1) = (void *)h;                                                   \
+	(tl1) = h->dir1;                                                          \
+	do {                                                                      \
+		if((tl1) == NULL) {                                                   \
+			LM_WARN("timer dir1 list is broken at cell %p with dir1=%p "      \
+					"dir2=%p; trying to fix it...",                           \
+					(last_tl1), (last_tl1)->dir1, (last_tl1)->dir2);          \
+			(last_tl2) = (void *)h;                                           \
+			(tl2) = h->dir2;                                                  \
+			do {                                                              \
+				if((tl2) == NULL) {                                           \
+					LM_CRIT("timer dir2 list is broken too at cell %p with "  \
+							"dir1=%p dir2=%p; abort",                         \
+							(last_tl2), (last_tl2)->dir1, (last_tl2)->dir2);  \
+					return 0;                                                 \
+				}                                                             \
+				if((last_tl1) == (tl2)) {                                     \
+					(last_tl1)->dir1 = (void *)(last_tl2);                    \
+					(tl1) = (void *)(last_tl2);                               \
+					LM_WARN("timer dir1 list recovered at cell %p with "      \
+							"dir1=%p dir2=%p; rechecking...",                 \
+							(last_tl1), (last_tl1)->dir1, (last_tl1)->dir2);  \
+					goto redo_sanity_check;                                   \
+				}                                                             \
+                                                                              \
+				(last_tl2) = (tl2);                                           \
+				(tl2) = (tl2)->dir2;                                          \
+			} while((tl2) != (void *)h);                                      \
+			LM_CRIT("timer dir2 list did not find the dir1 list broken cell " \
+					"%p with "                                                \
+					"dir1=%p dir2=%p; abort",                                 \
+					(last_tl1), (last_tl1)->dir1, (last_tl1)->dir2);          \
+			return 0;                                                         \
+		}                                                                     \
+		(last_tl1) = (tl1);                                                   \
+		(tl1) = (tl1)->dir1;                                                  \
+	} while((tl1) != (void *)h)
+
+
+inline static int timer_list_sanity_check(struct timer_head *h)
+{
+	struct timer_ln *tl1 = NULL;
+	struct timer_ln *tl2 = NULL;
+	struct timer_ln *last_tl1 = NULL;
+	struct timer_ln *last_tl2 = NULL;
+
+	if(h == NULL) {
+		LM_CRIT("NULL timer head; abort");
+		return 0;
+	}
+
+redo_sanity_check:
+	timer_sanity_check(h, tl1, tl2, last_tl1, last_tl2, next, prev);
+	timer_sanity_check(h, tl1, tl2, last_tl1, last_tl2, prev, next);
+
+	return 1;
+}
+
 /* called from timer_handle, must be called with the timer lock held
  * WARNING: expired one shot timers are _not_ automatically reinit
  *          (because they could have been already freed from the timer
@@ -817,6 +876,12 @@ inline static void timer_list_expire(ticks_t t, struct timer_head *h
 
 	first = h->next;
 #endif
+
+	// check if timer circular double linked list has broken links
+	// try to recover if so, otherwise abort execution
+	if(!timer_list_sanity_check(h)) {
+		abort();
+	}
 
 	/*LM_DBG("@ ticks = %lu, list =%p\n",
 			(unsigned long) *ticks, h);
@@ -919,7 +984,7 @@ static void timer_handler(void)
 		for(prev_ticks = prev_ticks + 1; prev_ticks != saved_ticks;
 				prev_ticks++)
 			timer_run(prev_ticks);
-		timer_run(prev_ticks);		/* do it for saved_ticks too */
+		timer_run(prev_ticks); /* do it for saved_ticks too */
 	} while(saved_ticks != *ticks); /* in case *ticks changed */
 #ifdef USE_SLOW_TIMER
 	timer_list_expire(
