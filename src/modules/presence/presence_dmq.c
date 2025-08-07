@@ -408,16 +408,26 @@ int pres_dmq_handle_msg(
 			if(strcmp(it->string, "action") == 0) {
 				action = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "presentity") == 0) {
+				if(presentity != NULL) {
+					action = PRES_DMQ_NONE;
+					break;
+				}
 				presentity = pres_parse_json_presentity(it);
 				if(!presentity) {
 					LM_ERR("failed to construct presentity from json\n");
-					goto invalid;
+					action = PRES_DMQ_NONE;
+					break;
 				}
 			} else if(strcmp(it->string, "subscription") == 0) {
+				if(subscription != NULL) {
+					action = PRES_DMQ_NONE;
+					break;
+				}
 				subscription = pres_parse_json_subscription(it);
 				if(!subscription) {
 					LM_ERR("failed to construct subscription from json\n");
-					goto invalid;
+					action = PRES_DMQ_NONE;
+					break;
 				}
 			} else if(strcmp(it->string, "t_new") == 0) {
 				t_new = SRJSON_GET_INT(it);
@@ -437,7 +447,8 @@ int pres_dmq_handle_msg(
 				}
 			} else {
 				LM_ERR("unrecognized field in json object\n");
-				goto invalid;
+				action = PRES_DMQ_NONE;
+				break;
 			}
 		}
 
@@ -617,7 +628,7 @@ int pres_dmq_build_json_presentity(srjson_doc_t jdoc, srjson_t *jobj,
 		res += 10 + ruid->len;
 	}
 	// body
-	if(body) {
+	if(body && body->s) {
 		srjson_AddStrToObject(&jdoc, jobj, "body", body->s, body->len);
 		res += 10 + body->len;
 	}
