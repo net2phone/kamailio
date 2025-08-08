@@ -99,6 +99,17 @@ extern str pres_xavp_cfg;
 extern int pres_retrieve_order;
 extern str pres_retrieve_order_by;
 extern int pres_enable_dmq;
+extern int pres_enable_pres_dmq;
+extern int pres_enable_pres_sync_dmq;
+extern int pres_enable_subs_dmq;
+extern int pres_enable_subs_sync_dmq;
+extern int pres_skip_notify_dmq;
+extern str pres_default_socket;
+extern int pres_dmq_batch_size;
+extern int pres_dmq_batch_msg_pres;
+extern int pres_dmq_batch_msg_subs;
+extern int pres_dmq_batch_msg_size;
+extern int pres_dmq_batch_usleep;
 extern int pres_subs_respond_200;
 
 extern int phtable_size;

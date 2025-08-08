@@ -288,6 +288,9 @@ static int mod_init(void)
 			_tpsdbf.close(topos_db_con);
 			topos_db_con = NULL;
 		}
+	} else if(_tps_storage.len == 6
+			  && strncmp(_tps_storage.s, "htable", 6) == 0) {
+		// use htable module api
 	} else {
 		if(_tps_storage.len != 7 && strncmp(_tps_storage.s, "redis", 5) != 0) {
 			LM_ERR("unknown storage type: %.*s\n", _tps_storage.len,
@@ -521,6 +524,9 @@ int tps_msg_received(sr_event_param_t *evp)
 	memset(&msg, 0, sizeof(sip_msg_t));
 	msg.buf = obuf->s;
 	msg.len = obuf->len;
+	if (evp->rcv) {
+		msg.rcv = *(receive_info_t *)evp->rcv;
+	}
 
 	ret = 0;
 	if(tps_prepare_msg(&msg) != 0) {
@@ -598,6 +604,9 @@ int tps_msg_sent(sr_event_param_t *evp)
 	memset(&msg, 0, sizeof(sip_msg_t));
 	msg.buf = obuf->s;
 	msg.len = obuf->len;
+	if (evp->rcv) {
+		msg.rcv = *(receive_info_t *)evp->rcv;
+	}
 
 	if(tps_prepare_msg(&msg) != 0) {
 		goto done;
