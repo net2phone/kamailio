@@ -177,6 +177,11 @@ int pres_enable_subs_dmq = 0;
 int pres_enable_subs_sync_dmq = 1;
 int pres_skip_notify_dmq = 0;
 str pres_default_socket = {0, 0};
+int pres_dmq_batch_size = 0;
+int pres_dmq_batch_msg_pres = 1;
+int pres_dmq_batch_msg_subs = 1;
+int pres_dmq_batch_msg_size = 60000;
+int pres_dmq_batch_usleep = 0;
 int pres_delete_same_subs = 0;
 int pres_subs_respond_200 = 1;
 
@@ -257,6 +262,11 @@ static param_export_t params[]={
 	{ "enable_pres_sync_dmq",   PARAM_INT, &pres_enable_pres_sync_dmq},
 	{ "enable_subs_dmq",        PARAM_INT, &pres_enable_subs_dmq},
 	{ "enable_subs_sync_dmq",   PARAM_INT, &pres_enable_subs_sync_dmq},
+	{ "batch_msg_pres",         PARAM_INT, &pres_dmq_batch_msg_pres},
+	{ "batch_msg_subs",         PARAM_INT, &pres_dmq_batch_msg_subs},
+	{ "batch_msg_size",         PARAM_INT, &pres_dmq_batch_msg_size},
+	{ "batch_size",             PARAM_INT, &pres_dmq_batch_size},
+	{ "batch_usleep",           PARAM_INT, &pres_dmq_batch_usleep},
 	{ "skip_notify_dmq",        PARAM_INT, &pres_skip_notify_dmq},
 	{ "default_socket",         PARAM_STR, &pres_default_socket},
 	{ "pres_subs_mode",         PARAM_INT, &_pres_subs_mode},
@@ -361,6 +371,24 @@ static int mod_init(void)
 			&& lookup_local_socket(&pres_default_socket) == NULL) {
 		LM_ERR("default_socket is not a socket the proxy is listening on\n");
 		return -1;
+	}
+
+	if(pres_dmq_batch_msg_size > 60000) {
+		LM_ERR("batch_msg_size too high[%d] setting to [60000]\n",
+				pres_dmq_batch_msg_size);
+		pres_dmq_batch_msg_size = 60000;
+	}
+
+	if(pres_dmq_batch_msg_pres > 150) {
+		LM_ERR("batch_msg_pres too high[%d] setting to [150]\n",
+				pres_dmq_batch_msg_pres);
+		pres_dmq_batch_msg_pres = 150;
+	}
+
+	if(pres_dmq_batch_msg_subs > 150) {
+		LM_ERR("batch_msg_subs too high[%d] setting to [150]\n",
+				pres_dmq_batch_msg_subs);
+		pres_dmq_batch_msg_subs = 150;
 	}
 
 	/* bind the SL API */

@@ -335,12 +335,11 @@ subs_t *pres_parse_json_subscription(srjson_t *in)
 int pres_dmq_handle_msg(
 		struct sip_msg *msg, peer_reponse_t *resp, dmq_node_t *node)
 {
-	int content_length = 0, t_new = 0, sent_reply = 0;
-	str cur_etag = STR_NULL, body = STR_NULL, p_body = STR_NULL,
-		ruid = STR_NULL;
-	char *sphere = NULL;
+	int content_length = 0;
+	str body = STR_NULL;
 	srjson_doc_t jdoc;
 	srjson_t *it = NULL;
+	srjson_t *multi_it = NULL;
 	presentity_t *presentity = NULL;
 	subs_t *subscription = NULL;
 
@@ -387,82 +386,107 @@ int pres_dmq_handle_msg(
 		}
 	}
 
-	/* iterate over keys */
-	for(it = jdoc.root->child; it; it = it->next) {
-		LM_DBG("found field: %s\n", it->string);
-		if(strcmp(it->string, "action") == 0) {
-			action = SRJSON_GET_INT(it);
-		} else if(strcmp(it->string, "presentity") == 0) {
-			if(presentity != NULL) {
-				goto invalid;
-			}
-			presentity = pres_parse_json_presentity(it);
-			if(!presentity) {
-				LM_ERR("failed to construct presentity from json\n");
-				goto invalid;
-			}
-		} else if(strcmp(it->string, "subscription") == 0) {
-			if(subscription != NULL) {
-				goto invalid;
-			}
-			subscription = pres_parse_json_subscription(it);
-			if(!subscription) {
-				LM_ERR("failed to construct subscription from json\n");
-				goto invalid;
-			}
-		} else if(strcmp(it->string, "t_new") == 0) {
-			t_new = SRJSON_GET_INT(it);
-		} else if(strcmp(it->string, "cur_etag") == 0) {
-			cur_etag.s = it->valuestring;
-			cur_etag.len = strlen(it->valuestring);
-		} else if(strcmp(it->string, "sphere") == 0) {
-			sphere = it->valuestring;
-		} else if(strcmp(it->string, "ruid") == 0) {
-			ruid.s = it->valuestring;
-			ruid.len = strlen(it->valuestring);
-		} else if(strcmp(it->string, "body") == 0) {
-			p_body.s = it->valuestring;
-			p_body.len = strlen(it->valuestring);
-			if(p_body.len == 0) {
-				p_body.s = NULL;
-			}
-		} else {
-			LM_ERR("unrecognized field in json object\n");
-			goto invalid;
-		}
+	if(jdoc.root->child->type == srjson_Array
+			&& strcmp(jdoc.root->child->string, "multi") == 0) {
+		multi_it = jdoc.root->child->child;
+	} else {
+		multi_it = jdoc.root;
 	}
+	while(multi_it) {
+		int t_new = 0, sent_reply = 0;
+		str cur_etag = STR_NULL, p_body = STR_NULL, ruid = STR_NULL;
+		char *sphere = NULL;
+		if(presentity)
+			pkg_free(presentity);
+		if(subscription)
+			pkg_free(subscription);
+		presentity = NULL;
+		subscription = NULL;
+		/* iterate over keys */
+		for(it = multi_it->child; it; it = it->next) {
+			LM_DBG("found field: %s\n", it->string);
+			if(strcmp(it->string, "action") == 0) {
+				action = SRJSON_GET_INT(it);
+			} else if(strcmp(it->string, "presentity") == 0) {
+				if(subscription != NULL) {
+					action = PRES_DMQ_NONE;
+					break;
+				}
+				if(presentity != NULL) {
+					action = PRES_DMQ_NONE;
+					break;
+				}
+				presentity = pres_parse_json_presentity(it);
+				if(!presentity) {
+					LM_ERR("failed to construct presentity from json\n");
+					action = PRES_DMQ_NONE;
+					break;
+				}
+			} else if(strcmp(it->string, "subscription") == 0) {
+				subscription = pres_parse_json_subscription(it);
+				if(!subscription) {
+					LM_ERR("failed to construct subscription from json\n");
+					action = PRES_DMQ_NONE;
+					break;
+				}
+			} else if(strcmp(it->string, "t_new") == 0) {
+				t_new = SRJSON_GET_INT(it);
+			} else if(strcmp(it->string, "cur_etag") == 0) {
+				cur_etag.s = it->valuestring;
+				cur_etag.len = strlen(it->valuestring);
+			} else if(strcmp(it->string, "sphere") == 0) {
+				sphere = it->valuestring;
+			} else if(strcmp(it->string, "ruid") == 0) {
+				ruid.s = it->valuestring;
+				ruid.len = strlen(it->valuestring);
+			} else if(strcmp(it->string, "body") == 0) {
+				p_body.s = it->valuestring;
+				p_body.len = strlen(it->valuestring);
+				if(p_body.len == 0) {
+					p_body.s = NULL;
+				}
+			} else {
+				LM_ERR("unrecognized field in json object\n");
+				action = PRES_DMQ_NONE;
+				break;
+			}
+		}
 
-	switch(action) {
-		case PRES_DMQ_UPDATE_PRESENTITY:
-			if(presentity == NULL
-					|| update_presentity(NULL, presentity, &p_body, t_new,
-							   &sent_reply, sphere, &cur_etag, &ruid,
-							   presentity->event->evp->type == EVENT_DIALOG ? 0
-																			: 1,
-							   pres_skip_notify_dmq)
-							   < 0) {
-				goto error;
-			}
-			break;
-		case PRES_DMQ_SYNC_PRESENTITY:
-			*pres_dmq_recv = 0;
-			if(pres_dmq_send_all_presentities(node) < 0) {
-				goto error;
-			}
-			break;
-		case PRES_DMQ_UPDATE_SUBSCRIPTION:
-			if(subscription == NULL || replace_subscription(subscription) < 0) {
-				goto error;
-			}
-			break;
-		case PRES_DMQ_SYNC_SUBSCRIPTION:
-			*pres_dmq_recv = 0;
-			if(pres_dmq_send_all_subscriptions(node) < 0) {
-				goto error;
-			}
-			break;
-		case PRES_DMQ_NONE:
-			break;
+		switch(action) {
+			case PRES_DMQ_UPDATE_PRESENTITY:
+				if(presentity == NULL
+						|| update_presentity(NULL, presentity, &p_body, t_new,
+								   &sent_reply, sphere, &cur_etag, &ruid,
+								   presentity->event->evp->type == EVENT_DIALOG
+										   ? 0
+										   : 1,
+								   pres_skip_notify_dmq)
+								   < 0) {
+					goto error;
+				}
+				break;
+			case PRES_DMQ_SYNC_PRESENTITY:
+				*pres_dmq_recv = 0;
+				if(pres_dmq_send_all_presentities(node) < 0) {
+					goto error;
+				}
+				break;
+			case PRES_DMQ_UPDATE_SUBSCRIPTION:
+				if(subscription == NULL
+						|| replace_subscription(subscription) < 0) {
+					goto error;
+				}
+				break;
+			case PRES_DMQ_SYNC_SUBSCRIPTION:
+				*pres_dmq_recv = 0;
+				if(pres_dmq_send_all_subscriptions(node) < 0) {
+					goto error;
+				}
+				break;
+			case PRES_DMQ_NONE:
+				break;
+		}
+		multi_it = multi_it->next;
 	}
 
 	resp->reason = pres_dmq_200_rpl;
@@ -549,12 +573,74 @@ int pres_dmq_request_sync()
 }
 
 
+int pres_dmq_build_json_presentity(srjson_doc_t jdoc, srjson_t *jobj,
+		presentity_t *presentity, str *body, int t_new, str *cur_etag,
+		char *sphere, str *ruid)
+{
+	srjson_t *p_json;
+	int res = 97; // initial structure {"action":,"presentity":{...}}
+
+	// action
+	srjson_AddNumberToObject(&jdoc, jobj, "action", PRES_DMQ_UPDATE_PRESENTITY);
+	res += snprintf(NULL, 0, "%d", PRES_DMQ_UPDATE_PRESENTITY);
+
+	// presentity
+	p_json = srjson_CreateObject(&jdoc);
+	srjson_AddStrToObject(&jdoc, p_json, "domain", presentity->domain.s,
+			presentity->domain.len);
+	res += presentity->domain.len;
+	srjson_AddStrToObject(
+			&jdoc, p_json, "user", presentity->user.s, presentity->user.len);
+	res += presentity->user.len;
+	srjson_AddStrToObject(
+			&jdoc, p_json, "etag", presentity->etag.s, presentity->etag.len);
+	res += presentity->etag.len;
+	srjson_AddNumberToObject(&jdoc, p_json, "expires", presentity->expires);
+	res += snprintf(NULL, 0, "%.0lf", (double)presentity->expires);
+	srjson_AddNumberToObject(&jdoc, p_json, "recv", presentity->received_time);
+	res += snprintf(NULL, 0, "%.0lf", (double)presentity->received_time);
+	if(presentity->sender) {
+		srjson_AddStrToObject(&jdoc, p_json, "sender", presentity->sender->s,
+				presentity->sender->len);
+		res += 12 + presentity->sender->len;
+	}
+	srjson_AddStrToObject(&jdoc, p_json, "event", presentity->event->name.s,
+			presentity->event->name.len);
+	res += presentity->event->name.len;
+	srjson_AddItemToObject(&jdoc, jobj, "presentity", p_json);
+	// t_new
+	srjson_AddNumberToObject(&jdoc, jobj, "t_new", t_new);
+	res += snprintf(NULL, 0, "%d", t_new);
+	// cur_etag
+	if(cur_etag) {
+		srjson_AddStrToObject(
+				&jdoc, jobj, "cur_etag", cur_etag->s, cur_etag->len);
+		res += 14 + cur_etag->len;
+	}
+	// sphere
+	if(sphere) {
+		srjson_AddStringToObject(&jdoc, jobj, "sphere", sphere);
+		res += 12 + snprintf(NULL, 0, "%s", sphere);
+	}
+	// ruid
+	if(ruid) {
+		srjson_AddStrToObject(&jdoc, jobj, "ruid", ruid->s, ruid->len);
+		res += 10 + ruid->len;
+	}
+	// body
+	if(body) {
+		srjson_AddStrToObject(&jdoc, jobj, "body", body->s, body->len);
+		res += 10 + body->len;
+	}
+
+	return res;
+}
+
+
 int pres_dmq_replicate_presentity(presentity_t *presentity, str *body,
 		int t_new, str *cur_etag, char *sphere, str *ruid, dmq_node_t *node)
 {
-
 	srjson_doc_t jdoc;
-	srjson_t *p_json;
 
 	if(!pres_dmq_proc_init && pres_dmq_init_proc() < 0) {
 		return -1;
@@ -564,11 +650,6 @@ int pres_dmq_replicate_presentity(presentity_t *presentity, str *body,
 		return 0;
 	}
 
-	LM_DBG("replicating presentity record - old etag %.*s, new etag %.*s, ruid "
-		   "%.*s\n",
-			presentity->etag.len, presentity->etag.s, cur_etag->len,
-			cur_etag->s, ruid->len, ruid->s);
-
 	srjson_InitDoc(&jdoc, NULL);
 
 	jdoc.root = srjson_CreateObject(&jdoc);
@@ -577,45 +658,13 @@ int pres_dmq_replicate_presentity(presentity_t *presentity, str *body,
 		goto error;
 	}
 
-	// action
-	srjson_AddNumberToObject(
-			&jdoc, jdoc.root, "action", PRES_DMQ_UPDATE_PRESENTITY);
-	// presentity
-	p_json = srjson_CreateObject(&jdoc);
-	srjson_AddStrToObject(&jdoc, p_json, "domain", presentity->domain.s,
-			presentity->domain.len);
-	srjson_AddStrToObject(
-			&jdoc, p_json, "user", presentity->user.s, presentity->user.len);
-	srjson_AddStrToObject(
-			&jdoc, p_json, "etag", presentity->etag.s, presentity->etag.len);
-	srjson_AddNumberToObject(&jdoc, p_json, "expires", presentity->expires);
-	srjson_AddNumberToObject(&jdoc, p_json, "recv", presentity->received_time);
-	if(presentity->sender) {
-		srjson_AddStrToObject(&jdoc, p_json, "sender", presentity->sender->s,
-				presentity->sender->len);
-	}
-	srjson_AddStrToObject(&jdoc, p_json, "event", presentity->event->name.s,
-			presentity->event->name.len);
-	srjson_AddItemToObject(&jdoc, jdoc.root, "presentity", p_json);
-	// t_new
-	srjson_AddNumberToObject(&jdoc, jdoc.root, "t_new", t_new);
-	// cur_etag
-	if(cur_etag) {
-		srjson_AddStrToObject(
-				&jdoc, jdoc.root, "cur_etag", cur_etag->s, cur_etag->len);
-	}
-	// sphere
-	if(sphere) {
-		srjson_AddStringToObject(&jdoc, jdoc.root, "sphere", sphere);
-	}
-	// ruid
-	if(ruid) {
-		srjson_AddStrToObject(&jdoc, jdoc.root, "ruid", ruid->s, ruid->len);
-	}
-	// body
-	if(body && body->s) {
-		srjson_AddStrToObject(&jdoc, jdoc.root, "body", body->s, body->len);
-	}
+	LM_DBG("replicating presentity record - old etag %.*s, new etag %.*s, ruid "
+		   "%.*s\n",
+			presentity->etag.len, presentity->etag.s, cur_etag->len,
+			cur_etag->s, ruid->len, ruid->s);
+
+	pres_dmq_build_json_presentity(
+			jdoc, jdoc.root, presentity, body, t_new, cur_etag, sphere, ruid);
 
 	jdoc.buf.s = srjson_PrintUnformatted(&jdoc, jdoc.root);
 	if(jdoc.buf.s == NULL) {
@@ -623,8 +672,10 @@ int pres_dmq_replicate_presentity(presentity_t *presentity, str *body,
 		goto error;
 	}
 	jdoc.buf.len = strlen(jdoc.buf.s);
+
 	LM_DBG("sending serialized data %.*s\n", jdoc.buf.len, jdoc.buf.s);
 	if(pres_dmq_send(&jdoc.buf, node) != 0) {
+		LM_ERR("unable to send dmq message\n");
 		goto error;
 	}
 
@@ -634,6 +685,7 @@ int pres_dmq_replicate_presentity(presentity_t *presentity, str *body,
 	return 0;
 
 error:
+	LM_ERR("presentity replication failed\n");
 	if(jdoc.buf.s != NULL) {
 		jdoc.free_fn(jdoc.buf.s);
 		jdoc.buf.s = NULL;
@@ -643,11 +695,113 @@ error:
 }
 
 
+int pres_dmq_build_json_subscription(
+		srjson_doc_t jdoc, srjson_t *jobj, subs_t *subscription)
+{
+	srjson_t *s_json;
+	int res = 386; // initial structure {"action":,"subscription":{...}}
+
+	// action
+	srjson_AddNumberToObject(
+			&jdoc, jobj, "action", PRES_DMQ_UPDATE_SUBSCRIPTION);
+	res += snprintf(NULL, 0, "%d", PRES_DMQ_UPDATE_SUBSCRIPTION);
+	// subscription
+	s_json = srjson_CreateObject(&jdoc);
+	srjson_AddStrToObject(&jdoc, s_json, "pres_uri", subscription->pres_uri.s,
+			subscription->pres_uri.len);
+	res += subscription->pres_uri.len;
+	srjson_AddStrToObject(&jdoc, s_json, "contact", subscription->contact.s,
+			subscription->contact.len);
+	res += subscription->contact.len;
+	srjson_AddStrToObject(&jdoc, s_json, "local_contact",
+			subscription->local_contact.s, subscription->local_contact.len);
+	res += subscription->local_contact.len;
+	srjson_AddStrToObject(&jdoc, s_json, "watcher_domain",
+			subscription->watcher_domain.s, subscription->watcher_domain.len);
+	res += subscription->watcher_domain.len;
+	srjson_AddStrToObject(&jdoc, s_json, "watcher_user",
+			subscription->watcher_user.s, subscription->watcher_user.len);
+	res += subscription->watcher_user.len;
+	srjson_AddStrToObject(&jdoc, s_json, "from_domain",
+			subscription->from_domain.s, subscription->from_domain.len);
+	res += subscription->from_domain.len;
+	srjson_AddStrToObject(&jdoc, s_json, "from_user", subscription->from_user.s,
+			subscription->from_user.len);
+	res += subscription->from_user.len;
+	srjson_AddStrToObject(&jdoc, s_json, "to_domain", subscription->to_domain.s,
+			subscription->to_domain.len);
+	res += subscription->to_domain.len;
+	srjson_AddStrToObject(&jdoc, s_json, "to_user", subscription->to_user.s,
+			subscription->to_user.len);
+	res += subscription->to_user.len;
+	srjson_AddStrToObject(&jdoc, s_json, "from_tag", subscription->from_tag.s,
+			subscription->from_tag.len);
+	res += subscription->from_tag.len;
+	srjson_AddStrToObject(&jdoc, s_json, "to_tag", subscription->to_tag.s,
+			subscription->to_tag.len);
+	res += subscription->to_tag.len;
+	srjson_AddStrToObject(&jdoc, s_json, "user_agent",
+			subscription->user_agent.s, subscription->user_agent.len);
+	res += subscription->user_agent.len;
+	srjson_AddStrToObject(&jdoc, s_json, "callid", subscription->callid.s,
+			subscription->callid.len);
+	res += subscription->callid.len;
+	srjson_AddStrToObject(&jdoc, s_json, "reason", subscription->reason.s,
+			subscription->reason.len);
+	res += subscription->reason.len;
+	srjson_AddStrToObject(&jdoc, s_json, "socket_info",
+			subscription->sockinfo_str.s, subscription->sockinfo_str.len);
+	res += subscription->sockinfo_str.len;
+	srjson_AddStrToObject(&jdoc, s_json, "record_route",
+			subscription->record_route.s, subscription->record_route.len);
+	res += subscription->record_route.len;
+	srjson_AddStrToObject(&jdoc, s_json, "event_id", subscription->event_id.s,
+			subscription->event_id.len);
+	res += subscription->event_id.len;
+	if(subscription->event) {
+		srjson_AddStrToObject(&jdoc, s_json, "event",
+				subscription->event->name.s, subscription->event->name.len);
+		res += 11 + subscription->event->name.len; // "event":"", + name.len
+	}
+	srjson_AddNumberToObject(
+			&jdoc, s_json, "local_cseq", subscription->local_cseq);
+	res += snprintf(NULL, 0, "%u", subscription->local_cseq);
+	srjson_AddNumberToObject(
+			&jdoc, s_json, "remote_cseq", subscription->remote_cseq);
+	res += snprintf(NULL, 0, "%u", subscription->remote_cseq);
+	if(subscription->expires != 0
+			&& subscription->expires < ksr_time_sint(NULL, NULL)) {
+		srjson_AddNumberToObject(&jdoc, s_json, "expires",
+				subscription->expires + ksr_time_sint(NULL, NULL));
+		res += snprintf(NULL, 0, "%u",
+				subscription->expires + ksr_time_sint(NULL, NULL));
+	} else {
+		srjson_AddNumberToObject(
+				&jdoc, s_json, "expires", subscription->expires);
+		res += snprintf(NULL, 0, "%u", subscription->expires);
+	}
+	srjson_AddNumberToObject(&jdoc, s_json, "flags", subscription->flags);
+	res += snprintf(NULL, 0, "%d", subscription->flags);
+	srjson_AddNumberToObject(&jdoc, s_json, "status", subscription->status);
+	res += snprintf(NULL, 0, "%u", subscription->status);
+	srjson_AddNumberToObject(&jdoc, s_json, "version", subscription->version);
+	res += snprintf(NULL, 0, "%d", subscription->version);
+	srjson_AddNumberToObject(&jdoc, s_json, "updated", subscription->updated);
+	res += snprintf(NULL, 0, "%d", subscription->updated);
+	srjson_AddNumberToObject(
+			&jdoc, s_json, "updated_winfo", subscription->updated_winfo);
+	res += snprintf(NULL, 0, "%d", subscription->updated_winfo);
+
+	srjson_AddItemToObject(&jdoc, jobj, "subscription", s_json);
+
+	return res;
+}
+
+
 int pres_dmq_replicate_subscription(subs_t *subscription, dmq_node_t *node)
 {
-
 	srjson_doc_t jdoc;
-	srjson_t *s_json;
+
 	LM_DBG("replicating subscription record - pres_uri %.*s, watcher_user "
 		   "%.*s, watcher_domain %.*s\n",
 			subscription->pres_uri.len, subscription->pres_uri.s,
@@ -670,68 +824,7 @@ int pres_dmq_replicate_subscription(subs_t *subscription, dmq_node_t *node)
 		goto error;
 	}
 
-	// action
-	srjson_AddNumberToObject(
-			&jdoc, jdoc.root, "action", PRES_DMQ_UPDATE_SUBSCRIPTION);
-	// subscription
-	s_json = srjson_CreateObject(&jdoc);
-	srjson_AddStrToObject(&jdoc, s_json, "pres_uri", subscription->pres_uri.s,
-			subscription->pres_uri.len);
-	srjson_AddStrToObject(&jdoc, s_json, "contact", subscription->contact.s,
-			subscription->contact.len);
-	srjson_AddStrToObject(&jdoc, s_json, "local_contact",
-			subscription->local_contact.s, subscription->local_contact.len);
-	srjson_AddStrToObject(&jdoc, s_json, "watcher_domain",
-			subscription->watcher_domain.s, subscription->watcher_domain.len);
-	srjson_AddStrToObject(&jdoc, s_json, "watcher_user",
-			subscription->watcher_user.s, subscription->watcher_user.len);
-	srjson_AddStrToObject(&jdoc, s_json, "from_domain",
-			subscription->from_domain.s, subscription->from_domain.len);
-	srjson_AddStrToObject(&jdoc, s_json, "from_user", subscription->from_user.s,
-			subscription->from_user.len);
-	srjson_AddStrToObject(&jdoc, s_json, "to_domain", subscription->to_domain.s,
-			subscription->to_domain.len);
-	srjson_AddStrToObject(&jdoc, s_json, "to_user", subscription->to_user.s,
-			subscription->to_user.len);
-	srjson_AddStrToObject(&jdoc, s_json, "from_tag", subscription->from_tag.s,
-			subscription->from_tag.len);
-	srjson_AddStrToObject(&jdoc, s_json, "to_tag", subscription->to_tag.s,
-			subscription->to_tag.len);
-	srjson_AddStrToObject(&jdoc, s_json, "user_agent",
-			subscription->user_agent.s, subscription->user_agent.len);
-	srjson_AddStrToObject(&jdoc, s_json, "callid", subscription->callid.s,
-			subscription->callid.len);
-	srjson_AddStrToObject(&jdoc, s_json, "reason", subscription->reason.s,
-			subscription->reason.len);
-	srjson_AddStrToObject(&jdoc, s_json, "socket_info",
-			subscription->sockinfo_str.s, subscription->sockinfo_str.len);
-	srjson_AddStrToObject(&jdoc, s_json, "record_route",
-			subscription->record_route.s, subscription->record_route.len);
-	srjson_AddStrToObject(&jdoc, s_json, "event_id", subscription->event_id.s,
-			subscription->event_id.len);
-	if(subscription->event)
-		srjson_AddStrToObject(&jdoc, s_json, "event",
-				subscription->event->name.s, subscription->event->name.len);
-	srjson_AddNumberToObject(
-			&jdoc, s_json, "local_cseq", subscription->local_cseq);
-	srjson_AddNumberToObject(
-			&jdoc, s_json, "remote_cseq", subscription->remote_cseq);
-	if(subscription->expires != 0
-			&& subscription->expires < ksr_time_sint(NULL, NULL)) {
-		srjson_AddNumberToObject(&jdoc, s_json, "expires",
-				subscription->expires + ksr_time_sint(NULL, NULL));
-	} else {
-		srjson_AddNumberToObject(
-				&jdoc, s_json, "expires", subscription->expires);
-	}
-	srjson_AddNumberToObject(&jdoc, s_json, "flags", subscription->flags);
-	srjson_AddNumberToObject(&jdoc, s_json, "status", subscription->status);
-	srjson_AddNumberToObject(&jdoc, s_json, "version", subscription->version);
-	srjson_AddNumberToObject(&jdoc, s_json, "updated", subscription->updated);
-	srjson_AddNumberToObject(
-			&jdoc, s_json, "updated_winfo", subscription->updated_winfo);
-
-	srjson_AddItemToObject(&jdoc, jdoc.root, "subscription", s_json);
+	pres_dmq_build_json_subscription(jdoc, jdoc.root, subscription);
 
 	jdoc.buf.s = srjson_PrintUnformatted(&jdoc, jdoc.root);
 	if(jdoc.buf.s == NULL) {
@@ -739,8 +832,10 @@ int pres_dmq_replicate_subscription(subs_t *subscription, dmq_node_t *node)
 		goto error;
 	}
 	jdoc.buf.len = strlen(jdoc.buf.s);
+
 	LM_DBG("sending serialized data %.*s\n", jdoc.buf.len, jdoc.buf.s);
 	if(pres_dmq_send(&jdoc.buf, node) != 0) {
+		LM_ERR("unable to send dmq message\n");
 		goto error;
 	}
 
@@ -763,11 +858,19 @@ error:
 int pres_dmq_cache_send_all_presentities(dmq_node_t *dmq_node)
 {
 	int i;
+	int n = 0;
+	int p = 0;
+	int buf_size = 12; // initial structure {"multi":[...]}
 	ps_ptable_t *ps_ptable = NULL;
 	ps_presentity_t *ptn = NULL;
+	ps_presentity_t *ptn_next = NULL;
+	ps_presentity_t *ptn_after_next = NULL;
 	presentity_t *presentity = NULL;
 	str pempty = str_init("");
 	pres_ev_t *ev;
+	srjson_doc_t jdoc;
+	srjson_t *p_arr;
+	srjson_t *p_json;
 
 	LM_DBG("send_all_presentities from cache started\n");
 
@@ -775,6 +878,17 @@ int pres_dmq_cache_send_all_presentities(dmq_node_t *dmq_node)
 	if(ps_ptable == NULL) {
 		LM_ERR("can't find presence table\n");
 		return -1;
+	}
+
+	if(pres_dmq_batch_msg_pres > 1) {
+		srjson_InitDoc(&jdoc, NULL);
+
+		jdoc.root = srjson_CreateObject(&jdoc);
+		p_arr = srjson_CreateArray(&jdoc);
+		if(p_arr == NULL) {
+			LM_ERR("cannot create json root\n");
+			goto error;
+		}
 	}
 
 	for(i = 0; i < ps_ptable->ssize; i++) {
@@ -788,17 +902,93 @@ int pres_dmq_cache_send_all_presentities(dmq_node_t *dmq_node)
 			if(presentity != NULL) {
 				presentity->priority = ptn->priority;
 				presentity->received_time = ptn->received_time;
-				pres_dmq_replicate_presentity(presentity,
-						(ptn->body.s) ? &ptn->body : &pempty, 1, &pempty, NULL,
-						(ptn->ruid.s) ? &ptn->ruid : &pempty, dmq_node);
+
+				if(pres_dmq_batch_msg_pres > 1) {
+					p_json = srjson_CreateObject(&jdoc);
+					if(p_json == NULL) {
+						LM_ERR("cannot create json root\n");
+						goto error;
+					}
+
+					buf_size += pres_dmq_build_json_presentity(jdoc, p_json,
+							presentity, (ptn->body.s) ? &ptn->body : &pempty, 1,
+							&pempty, NULL,
+							(ptn->ruid.s) ? &ptn->ruid : &pempty);
+
+					srjson_AddItemToArray(&jdoc, p_arr, p_json);
+					p++;
+
+					if(p >= pres_dmq_batch_msg_pres
+							|| (pres_dmq_batch_msg_size > 0
+									&& buf_size > pres_dmq_batch_msg_size)) {
+						srjson_AddItemToObject(
+								&jdoc, jdoc.root, "multi", p_arr);
+
+						jdoc.buf.s = srjson_PrintUnformatted(&jdoc, jdoc.root);
+						if(jdoc.buf.s == NULL) {
+							LM_ERR("unable to serialize data\n");
+							goto error;
+						}
+						jdoc.buf.len = strlen(jdoc.buf.s);
+
+						LM_DBG("sending serialized data %.*s\n", jdoc.buf.len,
+								jdoc.buf.s);
+						if(pres_dmq_send(&jdoc.buf, dmq_node) != 0) {
+							LM_ERR("unable to send dmq message\n");
+							goto error;
+						}
+
+						jdoc.free_fn(jdoc.buf.s);
+						jdoc.buf.s = NULL;
+						srjson_DestroyDoc(&jdoc);
+						srjson_InitDoc(&jdoc, NULL);
+						jdoc.root = srjson_CreateObject(&jdoc);
+						p_arr = srjson_CreateArray(&jdoc);
+						if(p_arr == NULL) {
+							LM_ERR("cannot create json root\n");
+							goto error;
+						}
+						p = 0;
+						buf_size = 12; // initial structure {"multi":[...]}
+						n++;
+					}
+				} else {
+					pres_dmq_replicate_presentity(presentity,
+							(ptn->body.s) ? &ptn->body : &pempty, 1, &pempty,
+							NULL, (ptn->ruid.s) ? &ptn->ruid : &pempty,
+							dmq_node);
+					n++;
+				}
 				pkg_free(presentity);
 			}
 			ptn = ptn->next;
+			if(pres_dmq_batch_size > 0 && pres_dmq_batch_usleep > 0
+					&& n >= pres_dmq_batch_size) {
+				n = 0;
+				// as we release lock we can not be sure that current presentity will exist after pause
+				// let store 2 next presenteties, if no one of them will exist after pause - continue with next slot
+				ptn_next = ptn->next;
+				ptn_after_next = ptn_next ? ptn_next->next : NULL;
+
+				lock_release(&ps_ptable->slots[i].lock);
+				sleep_us(pres_dmq_batch_usleep);
+
+				lock_get(&ps_ptable->slots[i].lock);
+				ptn = ptn ? ptn : (ptn_next ? ptn_next : ptn_after_next);
+			}
 		}
 		lock_release(&ps_ptable->slots[i].lock);
 	}
 
 	return 0;
+
+error:
+	if(jdoc.buf.s != NULL) {
+		jdoc.free_fn(jdoc.buf.s);
+		jdoc.buf.s = NULL;
+	}
+	srjson_DestroyDoc(&jdoc);
+	return -1;
 }
 
 
@@ -816,9 +1006,27 @@ int pres_dmq_send_all_presentities(dmq_node_t *dmq_node)
 int pres_dmq_cache_send_all_subscriptions(dmq_node_t *dmq_node)
 {
 	int i;
+	int n = 0;
+	int sn = 0;
+	int buf_size = 12; // initial structure {"multi":[...]}
 	subs_t *s = NULL;
+	subs_t *s_next = NULL;
+	subs_t *s_after_next = NULL;
+	srjson_doc_t jdoc;
+	srjson_t *s_arr;
+	srjson_t *s_json;
 
 	LM_DBG("send_all_subscriptions from cache started\n");
+	if(pres_dmq_batch_msg_subs > 1) {
+		srjson_InitDoc(&jdoc, NULL);
+
+		jdoc.root = srjson_CreateObject(&jdoc);
+		s_arr = srjson_CreateArray(&jdoc);
+		if(s_arr == NULL) {
+			LM_ERR("cannot create json root\n");
+			goto error;
+		}
+	}
 
 	for(i = 0; i < shtable_size; i++) {
 		lock_get(&subs_htable[i].lock);
@@ -829,14 +1037,84 @@ int pres_dmq_cache_send_all_subscriptions(dmq_node_t *dmq_node)
 			LM_DBG("send_all_subscriptions found subs to pres_uri %.*s with "
 				   "callid %.*s\n",
 					s->pres_uri.len, s->pres_uri.s, s->callid.len, s->callid.s);
-			pres_dmq_replicate_subscription(s, dmq_node);
+			if(pres_dmq_batch_msg_subs > 1) {
+				s_json = srjson_CreateObject(&jdoc);
+				if(s_json == NULL) {
+					LM_ERR("cannot create json root\n");
+					goto error;
+				}
+
+				buf_size += pres_dmq_build_json_subscription(jdoc, s_json, s);
+
+				srjson_AddItemToArray(&jdoc, s_arr, s_json);
+				sn++;
+
+				if(sn >= pres_dmq_batch_msg_subs
+						|| (pres_dmq_batch_msg_size > 0
+								&& buf_size > pres_dmq_batch_msg_size)) {
+					srjson_AddItemToObject(&jdoc, jdoc.root, "multi", s_arr);
+
+					jdoc.buf.s = srjson_PrintUnformatted(&jdoc, jdoc.root);
+					if(jdoc.buf.s == NULL) {
+						LM_ERR("unable to serialize data\n");
+						goto error;
+					}
+					jdoc.buf.len = strlen(jdoc.buf.s);
+
+					LM_DBG("sending serialized data %.*s\n", jdoc.buf.len,
+							jdoc.buf.s);
+					if(pres_dmq_send(&jdoc.buf, dmq_node) != 0) {
+						LM_ERR("unable to send dmq message\n");
+						goto error;
+					}
+
+					jdoc.free_fn(jdoc.buf.s);
+					jdoc.buf.s = NULL;
+					srjson_DestroyDoc(&jdoc);
+					srjson_InitDoc(&jdoc, NULL);
+					jdoc.root = srjson_CreateObject(&jdoc);
+					s_arr = srjson_CreateArray(&jdoc);
+					if(s_arr == NULL) {
+						LM_ERR("cannot create json root\n");
+						goto error;
+					}
+					sn = 0;
+					buf_size = 12; // initial structure {"multi":[...]}
+					n++;
+				}
+			} else {
+				pres_dmq_replicate_subscription(s, dmq_node);
+				n++;
+			}
 			s = s->next;
+			if(pres_dmq_batch_size > 0 && pres_dmq_batch_usleep > 0
+					&& n >= pres_dmq_batch_size) {
+				n = 0;
+				// as we release lock we can not be sure that current subscription will exist after pause
+				// let store 2 next subs, if no one of them will exist after pause - continue with next slot
+				s_next = s->next;
+				s_after_next = s_next ? s_next->next : NULL;
+
+				lock_release(&subs_htable[i].lock);
+				sleep_us(pres_dmq_batch_usleep);
+
+				lock_get(&subs_htable[i].lock);
+				s = s ? s : (s_next ? s_next : s_after_next);
+			}
 		}
 
 		lock_release(&subs_htable[i].lock);
 	}
 
 	return 0;
+
+error:
+	if(jdoc.buf.s != NULL) {
+		jdoc.free_fn(jdoc.buf.s);
+		jdoc.buf.s = NULL;
+	}
+	srjson_DestroyDoc(&jdoc);
+	return -1;
 }
 
 
