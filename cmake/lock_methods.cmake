@@ -77,7 +77,7 @@ endif()
 
 # check fast-lock arch support
 if("${TARGET_ARCH}" MATCHES
-   "i386$|x86_64$|aarch64$|arm$|arm6$|arm7$|ppc$|ppc64$|sparc64$|sparc$|alpha$|mips2$|mips64$"
+   "i386$|x86_64$|arm6$|arm7$|ppc$|ppc64$|sparc64$|sparc$|alpha$|mips2$|mips64$"
 )
   set(_HAVE_FAST_LOCK TRUE)
 elseif("${TARGET_ARCH}" MATCHES "mips$")
@@ -125,7 +125,7 @@ elseif("${_SELECTED_LOCK_METHOD}" STREQUAL "FAST_LOCK")
     # Add special definitions for mips + FAST_LOCK
     target_compile_definitions(common INTERFACE MIPS_HAS_LLSC) # likely
     target_compile_definitions(common INTERFACE NOSMP) # very likely
-  elseif("${TARGET_ARCH}" MATCHES "arm$|aarch64$")
+  elseif("${TARGET_ARCH}" MATCHES "arm$")
     target_compile_definitions(common INTERFACE NOSMP) # memory barriers not implemented for arm
   endif()
 elseif("${_SELECTED_LOCK_METHOD}" STREQUAL "PTHREAD_MUTEX")
