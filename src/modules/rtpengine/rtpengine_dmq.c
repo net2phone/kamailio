@@ -235,7 +235,6 @@ int rtpengine_dmq_handle_msg(
 			break;
 		case RTPENGINE_DMQ_SYNC:
 			if(rtpengine_dmq_replicate_sync() != 0) {
-				LM_ERR("failed to replicate sync\n");
 				goto error;
 			}
 			break;
@@ -356,7 +355,8 @@ int rtpengine_dmq_replicate_remove(str callid, str viabranch)
 int rtpengine_dmq_replicate_sync()
 {
 	int i;
-	struct rtpengine_hash_entry *entry, **last_next;
+	struct rtpengine_hash_entry *entry;
+	struct rtpengine_hash_table *hash_table;
 
 	LM_DBG("replicating all hash entries to dmq peers\n");
 
@@ -364,36 +364,37 @@ int rtpengine_dmq_replicate_sync()
 		LM_ERR("sanity checks failed\n");
 		return -1;
 	}
+	hash_table = rtpengine_hash_table_get();
+	if(!hash_table) {
+		LM_ERR("NULL rtpengine_hash_table\n");
+		return -1;
+	}
 
-	for(i = 0; i < rtpengine_hash_table->size; i++) {
-		lock_get(&rtpengine_hash_table->row_locks[i]);
+	for(i = 0; i < hash_table->size; i++) {
+		lock_get(&hash_table->row_locks[i]);
 
-		last_next = &rtpengine_hash_table->row_entry_list[i];
+		entry = hash_table->row_entry_list[i];
 
-		while((entry = *last_next)) {
-			if(entry->tout < get_ticks()) {
-				/* skip expired entries — do not replicate stale data */
-				last_next = &entry->next;
-				continue;
-			}
-
-			LM_DBG("replicating hash entry callid=%.*s viabranch=%.*s\n",
-					entry->callid.len, entry->callid.s, entry->viabranch.len,
-					entry->viabranch.s);
-
-			if(rtpengine_dmq_replicate_insert(
-					   entry->callid, entry->viabranch, entry)
-					!= 0) {
-				LM_ERR("failed to replicate hash entry callid=%.*s "
-					   "viabranch=%.*s\n",
+		while(entry) {
+			if(entry->tout >= get_ticks()) {
+				LM_DBG("replicating hash entry callid=%.*s viabranch=%.*s\n",
 						entry->callid.len, entry->callid.s,
 						entry->viabranch.len, entry->viabranch.s);
+
+				if(rtpengine_dmq_replicate_insert(
+						   entry->callid, entry->viabranch, entry)
+						!= 0) {
+					LM_ERR("failed to replicate hash entry callid=%.*s "
+						   "viabranch=%.*s\n",
+							entry->callid.len, entry->callid.s,
+							entry->viabranch.len, entry->viabranch.s);
+				}
 			}
 
-			last_next = &entry->next;
+			entry = entry->next;
 		}
 
-		lock_release(&rtpengine_hash_table->row_locks[i]);
+		lock_release(&hash_table->row_locks[i]);
 	}
 
 	return 0;
