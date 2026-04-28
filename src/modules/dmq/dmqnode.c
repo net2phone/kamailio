@@ -368,7 +368,13 @@ int dmq_node_del_filter(dmq_node_list_t *list, dmq_node_t *node, int filter)
 		if(cmp_dmq_node(cur, node)) {
 			if(filter == 0 || cur->local == 0) {
 				*prev = cur->next;
+				lock_release(&list->lock);
+				LM_DBG("released dmq_node_list->lock\n");
+				if(!cur->local && cur->status != DMQ_NODE_DISABLED)
+					dmq_peer_run_event_route(
+							cur->status, DMQ_NODE_DISABLED, cur);
 				destroy_dmq_node(cur, 1);
+				return 1;
 			}
 			lock_release(&list->lock);
 			LM_DBG("released dmq_node_list->lock\n");
@@ -409,7 +415,7 @@ int dmq_node_del_by_uri(dmq_node_list_t *list, str *suri)
 /**
  * @brief add dmq node
  */
-dmq_node_t *add_dmq_node(dmq_node_list_t *list, str *uri)
+dmq_node_t *add_dmq_node(dmq_node_list_t *list, str *uri, int no_peer_evt)
 {
 	dmq_node_t *newnode;
 
@@ -427,6 +433,9 @@ dmq_node_t *add_dmq_node(dmq_node_list_t *list, str *uri)
 	list->count++;
 	lock_release(&list->lock);
 	LM_DBG("released dmq_node_list->lock\n");
+	/* Initial status may come from URI (;status=...) or default (active). */
+	if(!no_peer_evt && !newnode->local)
+		dmq_peer_run_event_route(DMQ_NODE_DISABLED, newnode->status, newnode);
 	return newnode;
 error:
 	return NULL;
@@ -438,15 +447,21 @@ error:
 int update_dmq_node_status(dmq_node_list_t *list, dmq_node_t *node, int status)
 {
 	dmq_node_t *cur;
+	int old_status = 0;
 	LM_DBG("trying to acquire dmq_node_list->lock\n");
 	lock_get(&list->lock);
 	LM_DBG("acquired dmq_node_list->lock\n");
 	cur = list->nodes;
 	while(cur) {
 		if(cmp_dmq_node(cur, node)) {
+			if(!cur->local && cur->status != status) {
+				old_status = cur->status;
+			}
 			cur->status = status;
 			lock_release(&list->lock);
 			LM_DBG("released dmq_node_list->lock\n");
+			if(old_status)
+				dmq_peer_run_event_route(old_status, status, cur);
 			return 1;
 		}
 		cur = cur->next;
@@ -463,6 +478,7 @@ int update_dmq_node_status_on_timeout(
 		dmq_node_list_t *list, dmq_node_t *node, int fail_count_status)
 {
 	dmq_node_t *cur;
+	int old_status = 0;
 	lock_get(&list->lock);
 	cur = list->nodes;
 	while(cur) {
@@ -485,6 +501,8 @@ int update_dmq_node_status_on_timeout(
 							dmq_fail_count_threshold_disabled,
 							node->uri.host.len, node->uri.host.s,
 							node->uri.port.len, node->uri.port.s);
+					if(!cur->local)
+						old_status = cur->status;
 					cur->status = DMQ_NODE_DISABLED;
 
 					/* put the node from active to not_active state */
@@ -499,10 +517,14 @@ int update_dmq_node_status_on_timeout(
 							dmq_fail_count_threshold_disabled,
 							node->uri.host.len, node->uri.host.s,
 							node->uri.port.len, node->uri.port.s);
+					if(!cur->local)
+						old_status = cur->status;
 					cur->status = DMQ_NODE_NOT_ACTIVE;
 				}
 			}
 			lock_release(&list->lock);
+			if(old_status)
+				dmq_peer_run_event_route(old_status, cur->status, cur);
 			return 1;
 		}
 		cur = cur->next;

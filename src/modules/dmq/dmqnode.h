@@ -66,7 +66,7 @@ extern dmq_node_list_t *dmq_node_list;
 dmq_node_list_t *init_dmq_node_list();
 dmq_node_t *build_dmq_node(str *uri, int shm);
 int update_node_list(dmq_node_list_t *remote_list);
-dmq_node_t *add_dmq_node(dmq_node_list_t *list, str *uri);
+dmq_node_t *add_dmq_node(dmq_node_list_t *list, str *uri, int no_peer_evt);
 dmq_node_t *find_dmq_node(dmq_node_list_t *list, dmq_node_t *node);
 dmq_node_t *find_dmq_node_uri(dmq_node_list_t *list, str *uri);
 dmq_node_t *find_dmq_node_uri2(str *uri);
