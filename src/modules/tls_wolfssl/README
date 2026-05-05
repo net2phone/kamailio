@@ -13,9 +13,10 @@ Shih-Ping Chan
         2. Quick Start
         3. Important Notes
         4. Compiling the wolfSSL TLS Module
-        5. Additional RPC Commands
+        5. Support for externalized keys (PKCS#11)
+        6. Additional RPC Commands
 
-              5.1. tls.domains
+              6.1. tls.domains
 
    List of Examples
 
@@ -29,21 +30,27 @@ Chapter 1. Admin Guide
    2. Quick Start
    3. Important Notes
    4. Compiling the wolfSSL TLS Module
-   5. Additional RPC Commands
+   5. Support for externalized keys (PKCS#11)
+   6. Additional RPC Commands
 
-        5.1. tls.domains
+        6.1. tls.domains
 
 1. Overview
 
    This module implements the TLS transport for Kamailio using the wolfSSL
-   library (https://www.wolfssl.com). To enable the Kamailio TLS support
-   this module must be loaded and enable_tls=yes core setting must be
-   added to the Kamailio config file.
+   library (https://www.wolfssl.com). To enable it, the module must be
+   configured and loaded and the enable_tls=yes core setting must set.
+   This module is mutually exclusive with the tls module.
+
+   The module no longer supports multi-process mode and requires the
+   global config tcp_main_threads = 1. All wolfSSL functions run in the
+   PROC_TCP_MAIN process. Shared memory and pthreads monkey-patching are
+   not used.
 
    This module is derived from the tls module and adapted to wolfSSL.
    Credit goes to the authors of the tls module.
 
-   This module build from wolfSSl 5.2.0 onwards. There is a git submodule
+   This module builds from wolfSSl 5.2.0 onwards. There is a git submodule
    that contains a recent version of wolfSSL for easier building.
 
    This user is referred to the documentation of the tls module for
@@ -57,42 +64,79 @@ Chapter 1. Admin Guide
    be enabled with "#!define WITH_TLS" directive.
 
    Example 1.1. Quick Start Basic Config
-                #...
-                loadmodule "sl.so"
-                loadmodule "tls_wolfssl.so"
-                #... refer to Quick Start of tls module
-                #... for further configuration
+...
+#...
+loadmodule "sl.so"
+loadmodule "tls_wolfssl.so"
+#... refer to Quick Start of tls module
+#... for further configuration
+...
 
 3. Important Notes
 
    The wolfSSL TLS module is intended to be compiled with a recent version
-   of wolfSSL (5.2.0+).
+   of wolfSSL - 5.8.4+ is recommended.
 
-   Default compilations of the library will not work with Kamailio's own
-   memory allocation. See https://github.com/wolfSSL/wolfssl/issues/5264
-   for more details.
+   For reference the ideal build flags are:
+...
+# - Debian currently does not use -DWOLF_CRYPTO_CB_RSA_PAD: this affects use of
+RSA
+#   padding mechanisms on HSMs
+EXTRA_CFLAGS="-g -O2 -DWOLF_CRYPTO_CB_RSA_PAD" ./configure --enable-distro --ena
+ble-pkcs11
+
+# additional flags may be used: e.g. what Debian uses on forky for its libwolfss
+l44 / libwolfssl-dev
+EXTRA_CFLAGS="-g -O2 -DWOLF_CRYPTO_CB_RSA_PAD" ./configure \
+    --enable-distro --enable-ech --enable-hpke --enable-jni \
+    --enable-jobserver=no --enable-memcached --enable-quic --enable-qt --enable-
+pkcs11 \
+    --enable-writedup --disable-asm --disable-crl-monitor --disable-examples \
+    --disable-silent-rules
+...
 
 4. Compiling the wolfSSL TLS Module
 
    The development package for wolfSSL is required (libwolfssl-dev or
-   equivalent).
+   equivalent). The module requires PKCS#11 support so -DHAVE_PKCS11 must
+   be used in building the library (e.g. Debian/Ubuntu).
 
    In most case compiling the wolfSSL TLS module is as simple as:
-                make -C modules/tls_wolfssl
-                # to use the internal git submodule
-                make -C src WOLFSSL_INTERNAL=yes module_group_more="tls_wolfssl"
- group_include=more every-module
-                # cmake
-                cd build; make tls_wolfssl
-                cd build; make WOLFSSL_INTERNAL=ON tls_wolfssl
+...
+make -C modules/tls_wolfssl
+# to use the internal git submodule
+make -C src WOLFSSL_INTERNAL=yes module_group_more="tls_wolfssl" group_include=m
+ore every-module
+# cmake
+cd build; make tls_wolfssl
+cd build; make WOLFSSL_INTERNAL=ON tls_wolfssl
+...
 
-5. Additional RPC Commands
+5. Support for externalized keys (PKCS#11)
 
-   5.1. tls.domains
+   The module supports loading keys from PKCS#11 and up to 8 tokens are
+   supported. The key naming convention follows RFC 7512 (PKCS#11 URI):
+...
+# - in tls.cfg these URIs to refer to PKCS#11 keys
+# - this format is a subset of RFC 7512
+#
+private_key = pkcs11:token=MyToken;object=MyPrivateKey?module-path=/usr/lib64/li
+bsoftokn3.so&pin-value=12345678[pin-source=....]
+...
+
+   The string value itself cannot contain spaces so, e.g
+   token=NSS%20Certificate%20DB, allows URL-encoding. The pin-source
+   parameter supports redirection for security:
+     * pin-source=file:/path/to/pin (Read from file)
+     * pin-source=env:MY_PIN_VAR (Read from environment)
+
+6. Additional RPC Commands
+
+   6.1. tls.domains
 
    Supports the same RPC command as the tls module with some additions.
 
-5.1. tls.domains
+6.1. tls.domains
 
    Lists internal domain configuration that was configured in tls.cfg.
    Complements tls.options, see the tls module, which retrieves TLS

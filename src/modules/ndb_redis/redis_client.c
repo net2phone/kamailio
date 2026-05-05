@@ -41,6 +41,9 @@
 
 #include "redis_client.h"
 
+#define NDBR_SERVER_TLS 1
+#define NDBR_SENTINEL_TLS 2
+
 #define redisCommandNR(a...)        \
 	(int)({                         \
 		void *__tmp;                \
@@ -116,6 +119,9 @@ int redisc_init(void)
 	for(rsrv = _redisc_srv_list; rsrv; rsrv = rsrv->next) {
 		char sentinels[MAXIMUM_SENTINELS][256];
 		uint8_t sentinels_count = 0;
+#ifdef WITH_SSL
+		redisSSLContext *sslCtxSentinel = NULL;
+#endif
 
 		port = 6379;
 		db = 0;
@@ -201,6 +207,17 @@ int redisc_init(void)
 		// if sentinels are provided, we need to connect to them and retrieve the redis server
 		// address / port
 		if(sentinels_count > 0) {
+#ifdef WITH_SSL
+			if(enable_ssl & NDBR_SENTINEL_TLS) {
+				redisInitOpenSSL();
+				sslCtxSentinel = redisCreateSSLContext(
+						NULL, ndb_redis_ca_path, NULL, NULL, NULL, NULL);
+				if(sslCtxSentinel == NULL) {
+					LM_ERR("Unable to create Redis Sentinel TLS Context.\n");
+					return -1;
+				}
+			}
+#endif
 			for(i = 0; i < sentinels_count; i++) {
 				char *sentinelAddr = sentinels[i];
 				char *pos;
@@ -216,6 +233,19 @@ int redisc_init(void)
 
 				redis = redisConnectWithTimeout(sentinelAddr, port, tv_conn);
 				if(redis) {
+#ifdef WITH_SSL
+					if(enable_ssl & NDBR_SENTINEL_TLS) {
+						if(redisInitiateSSLWithContext(redis, sslCtxSentinel)
+								!= REDIS_OK) {
+							LM_ERR("Failed to initiate TLS connection to "
+								   "sentinel %s:%d: %s\n",
+									sentinelAddr, port, redis->errstr);
+							redisFree(redis);
+							redis = NULL;
+							continue;
+						}
+					}
+#endif
 					if(sentinel_master != 0) {
 						res = redisCommand(redis,
 								"SENTINEL get-master-addr-by-name %s",
@@ -257,15 +287,25 @@ int redisc_init(void)
 							srvfound = 1;
 						}
 					}
+					if(res) {
+						freeReplyObject(res);
+					}
+					redisFree(redis);
 				}
 				if(srvfound == 1) {
 					break;
 				}
 			}
+#ifdef WITH_SSL
+			if(sslCtxSentinel != NULL) {
+				redisFreeSSLContext(sslCtxSentinel);
+				sslCtxSentinel = NULL;
+			}
+#endif
 		}
 
 #ifdef WITH_SSL
-		if(enable_ssl) {
+		if(enable_ssl & NDBR_SERVER_TLS) {
 			/* Create SSL context*/
 			redisInitOpenSSL();
 			rsrv->sslCtxRedis = redisCreateSSLContext(
@@ -284,7 +324,7 @@ int redisc_init(void)
 		} else {
 #ifdef WITH_SSL
 			LOG(ndb_redis_debug, "Connecting to %s %s:%d\n",
-					(enable_ssl) ? "TLS" : "UDP", addr, port);
+					(enable_ssl & NDBR_SERVER_TLS) ? "TLS" : "UDP", addr, port);
 #else
 			LOG(ndb_redis_debug, "Connecting to %s:%d\n", addr, port);
 #endif
@@ -292,7 +332,7 @@ int redisc_init(void)
 		}
 
 #ifdef WITH_SSL
-		if(enable_ssl) {
+		if(enable_ssl & NDBR_SERVER_TLS) {
 			/* Negotiate SSL/TLS handshake*/
 			redisInitiateSSLWithContext(rsrv->ctxRedis, rsrv->sslCtxRedis);
 		}
@@ -526,6 +566,7 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 	unsigned int port, db, sock = 0, haspass = 0, sentinel_master = 1;
 #ifdef WITH_SSL
 	unsigned int enable_ssl = 0;
+	redisSSLContext *sslCtxSentinel = NULL;
 #endif
 	char sentinels[MAXIMUM_SENTINELS][256];
 	uint8_t sentinels_count = 0;
@@ -604,6 +645,17 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 	// if sentinels are provided, we need to connect to them and retrieve the redis server
 	// address / port
 	if(sentinels_count > 0) {
+#ifdef WITH_SSL
+		if(enable_ssl & NDBR_SENTINEL_TLS) {
+			redisInitOpenSSL();
+			sslCtxSentinel = redisCreateSSLContext(
+					NULL, ndb_redis_ca_path, NULL, NULL, NULL, NULL);
+			if(sslCtxSentinel == NULL) {
+				LM_ERR("Unable to create Redis Sentinel TLS Context.\n");
+				return -1;
+			}
+		}
+#endif
 		for(i = 0; i < sentinels_count; i++) {
 			char *sentinelAddr = sentinels[i];
 			char *pos;
@@ -619,6 +671,19 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 
 			redis = redisConnectWithTimeout(sentinelAddr, port, tv_conn);
 			if(redis) {
+#ifdef WITH_SSL
+				if(enable_ssl & NDBR_SENTINEL_TLS) {
+					if(redisInitiateSSLWithContext(redis, sslCtxSentinel)
+							!= REDIS_OK) {
+						LM_ERR("Failed to initiate TLS connection to sentinel "
+							   "%s:%d: %s\n",
+								sentinelAddr, port, redis->errstr);
+						redisFree(redis);
+						redis = NULL;
+						continue;
+					}
+				}
+#endif
 				if(sentinel_master != 0) {
 					res = redisCommand(redis,
 							"SENTINEL get-master-addr-by-name %s",
@@ -657,11 +722,21 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 						srvfound = 1;
 					}
 				}
+				if(res) {
+					freeReplyObject(res);
+				}
+				redisFree(redis);
 			}
 			if(srvfound == 1) {
 				break;
 			}
 		}
+#ifdef WITH_SSL
+		if(sslCtxSentinel != NULL) {
+			redisFreeSSLContext(sslCtxSentinel);
+			sslCtxSentinel = NULL;
+		}
+#endif
 	}
 
 	LM_DBG("rsrv->ctxRedis = %p\n", rsrv->ctxRedis);
@@ -675,7 +750,7 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 		rsrv->sslCtxRedis = NULL;
 	}
 
-	if(enable_ssl) {
+	if(enable_ssl & NDBR_SERVER_TLS) {
 		/* Create SSL context*/
 		redisInitOpenSSL();
 		rsrv->sslCtxRedis = redisCreateSSLContext(
@@ -692,7 +767,7 @@ int redisc_reconnect_server(redisc_server_t *rsrv)
 		rsrv->ctxRedis = redisConnectWithTimeout(addr, port, tv_conn);
 	}
 #ifdef WITH_SSL
-	if(enable_ssl) {
+	if(enable_ssl & NDBR_SERVER_TLS) {
 		/* Negotiate SSL/TLS handshake*/
 		redisInitiateSSLWithContext(rsrv->ctxRedis, rsrv->sslCtxRedis);
 	}

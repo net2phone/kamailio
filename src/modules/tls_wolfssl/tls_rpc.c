@@ -42,7 +42,6 @@
 #include "tls_rpc.h"
 #include "tls_cfg.h"
 
-extern int ksr_tcp_main_threads;
 static const char *tls_reload_doc[2] = {"Reload TLS configuration file", 0};
 
 static int tls_reload_do(str *config_file, char *errmsg, int errmsg_size)
@@ -82,19 +81,11 @@ static int tls_reload_do(str *config_file, char *errmsg, int errmsg_size)
 	*tls_domains_cfg = cfg;
 	lock_release(tls_domains_cfg_lock);
 
-#ifdef KSR_SSL_COMMON
-	/* reload HSM/engine keys into the new SSL_CTX.
-	 * tls_fix_domains_cfg only handles soft keys — without this,
-	 * tls.reload silently leaves the new ctx with no private key,
-	 * breaking all subsequent TLS handshakes until restart.
-	 * Fixes the pre-existing bug for both tcp_main_threads==0 and >0. */
-	if(tls_reload_engine_keys() < 0) {
-		snprintf(errmsg, errmsg_size,
-				"TLS config reloaded but HSM/engine key reload failed"
-				" (consult server log)");
+	if(tls_load_pkcs11_keys(*tls_domains_cfg, &srv_defaults, &cli_defaults)
+			< 0) {
+		LM_ERR("failed to load PKCS#11 keys in child process(es)\n");
 		return -1;
 	}
-#endif /* KSR_SSL_COMMON */
 
 	LM_INFO("TLS configuration reloaded\n");
 	return 0;
@@ -209,21 +200,8 @@ static void tls_reload(rpc_t *rpc, void *ctx)
 		return;
 	}
 
-	if(ksr_tcp_main_threads > 0) {
-		/* SSL_CTX owned by PROC_TCP_MAIN — use client stub */
-		LM_INFO("tcp_main_threads=%d: proxying tls.reload to"
-				" PROC_TCP_MAIN\n",
-				ksr_tcp_main_threads);
-		tls_reload_mt(rpc, ctx, &config_file);
-		return;
-	}
-
-	/* tcp_main_threads == 0: execute locally (in-process server) */
-	if(tls_reload_do(&config_file, errmsg, sizeof(errmsg)) < 0) {
-		rpc->fault(ctx, 500, errmsg);
-		return;
-	}
-	rpc->rpl_printf(ctx, "Ok. TLS configuration reloaded.");
+	/* SSL_CTX owned by PROC_TCP_MAIN — use client stub */
+	tls_reload_mt(rpc, ctx, &config_file);
 }
 
 

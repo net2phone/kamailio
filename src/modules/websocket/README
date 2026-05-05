@@ -40,7 +40,9 @@ Peter Dunkley
         5. Functions
 
               5.1. ws_handle_handshake()
-              5.2. ws_close([status, reason[, connection_id]])
+              5.2. ws_connect(host, port, path, subproto, cmode)
+              5.3. ws_send(host, port, path, subproto, cmode)
+              5.4. ws_close([status, reason[, connection_id]])
 
         6. RPC Commands
 
@@ -48,8 +50,9 @@ Peter Dunkley
               6.2. ws.close
               6.3. ws.ping
               6.4. ws.pong
-              6.5. ws.disable
-              6.6. ws.enable
+              6.5. ws.connect
+              6.6. ws.disable
+              6.7. ws.enable
 
         7. Event routes
 
@@ -75,9 +78,11 @@ Peter Dunkley
    1.12. Set timer_interval parameter
    1.13. Set rm_delay_intervalparameter
    1.14. ws_handle_handshake usage
-   1.15. ws_close usage
-   1.16. event_route[websocket:closed] usage
-   1.17. $ws_conid usage
+   1.15. ws_connect usage
+   1.16. ws_send usage
+   1.17. ws_close usage
+   1.18. event_route[websocket:closed] usage
+   1.19. $ws_conid usage
 
 Chapter 1. Admin Guide
 
@@ -112,7 +117,9 @@ Chapter 1. Admin Guide
    5. Functions
 
         5.1. ws_handle_handshake()
-        5.2. ws_close([status, reason[, connection_id]])
+        5.2. ws_connect(host, port, path, subproto, cmode)
+        5.3. ws_send(host, port, path, subproto, cmode)
+        5.4. ws_close([status, reason[, connection_id]])
 
    6. RPC Commands
 
@@ -120,8 +127,9 @@ Chapter 1. Admin Guide
         6.2. ws.close
         6.3. ws.ping
         6.4. ws.pong
-        6.5. ws.disable
-        6.6. ws.enable
+        6.5. ws.connect
+        6.6. ws.disable
+        6.7. ws.enable
 
    7. Event routes
 
@@ -524,7 +532,9 @@ modparam("websocket", "rm_delay_interval", 2)
 5. Functions
 
    5.1. ws_handle_handshake()
-   5.2. ws_close([status, reason[, connection_id]])
+   5.2. ws_connect(host, port, path, subproto, cmode)
+   5.3. ws_send(host, port, path, subproto, cmode)
+   5.4. ws_close([status, reason[, connection_id]])
 
 5.1.  ws_handle_handshake()
 
@@ -546,7 +556,69 @@ Note
 ws_handle_handshake();
 ...
 
-5.2.  ws_close([status, reason[, connection_id]])
+5.2.  ws_connect(host, port, path, subproto, cmode)
+
+   Connect via websocket to target specified by host and port over tcp
+   (cmode=0) or tls (cmode=1), using the specified the HTTP path and
+   sub-protocol.
+
+   Parameters:
+     * host - remote WebSocket server host name or IP address.
+     * port - remote WebSocket server port.
+     * path - HTTP request path used for the WebSocket upgrade request.
+     * subproto - WebSocket sub-protocol to request. At present, the
+       supported values are “sip” and “msrp”.
+     * cmode - set to “1” for a secure outbound connection over TLS and
+       “0” for a plain TCP connection.
+
+   Return: 1 (true) on success, negative (false) on failure.
+
+   Example 1.15. ws_connect usage
+...
+        $fs = "tcp:127.0.0.1:5060";
+        $du = "sip:127.0.0.1:443;transport=ws";
+    if(ws_connect("127.0.0.1", "443", "/service", "sip", "0") {
+        forward();
+    }
+...
+
+5.3.  ws_send(host, port, path, subproto, cmode)
+
+   Send the current SIP message over an outbound WebSocket connection to
+   the target specified by host and port over tcp (cmode=0) or tls
+   (cmode=1), using the specified HTTP path and sub-protocol.
+
+   If a matching outbound WebSocket connection already exists and is
+   ready, the SIP message is sent immediately. If a matching connection is
+   still in the WebSocket handshake phase, a copy of the SIP wire buffer
+   is queued in shared memory and transmitted after the handshake
+   succeeds. If no matching connection exists, a new outbound WebSocket
+   connection is initiated and the SIP message is queued until the
+   connection becomes ready.
+
+   Parameters:
+     * host - remote WebSocket server host name or IP address.
+     * port - remote WebSocket server port.
+     * path - HTTP request path used for the WebSocket upgrade request.
+     * subproto - WebSocket sub-protocol to use. At present, the supported
+       values are “sip” and “msrp”.
+     * cmode - set to “1” for a secure outbound connection over TLS and
+       “0” for a plain TCP connection.
+
+   Return: 1 (true) on success, negative (false) on failure.
+
+   This function can be used from ANY_ROUTE.
+
+   Example 1.16. ws_send usage
+...
+        $fs = "tcp:127.0.0.1:5060";
+        $du = "sip:127.0.0.1:80;transport=ws";
+    if(!ws_send("127.0.0.1", "80", "/service", "sip", "0")) {
+        xlog("failed to send over websocket\n");
+    }
+...
+
+5.4.  ws_close([status, reason[, connection_id]])
 
    This function closes a WebSocket connection.
 
@@ -566,7 +638,7 @@ Note
 
    This function can be used from ANY_ROUTE.
 
-   Example 1.15. ws_close usage
+   Example 1.17. ws_close usage
 ...
 ws_close(4000, "Because I say so");
 ...
@@ -577,8 +649,9 @@ ws_close(4000, "Because I say so");
    6.2. ws.close
    6.3. ws.ping
    6.4. ws.pong
-   6.5. ws.disable
-   6.6. ws.enable
+   6.5. ws.connect
+   6.6. ws.disable
+   6.7. ws.enable
 
 6.1. ws.dump
 
@@ -640,7 +713,28 @@ kamctl rpc ws.ping 1
 kamctl rpc ws.pong 1
 ...
 
-6.5. ws.disable
+6.5. ws.connect
+
+   Initiates an outbound WebSocket client connection and starts the HTTP
+   upgrade handshake.
+
+   Name: ws.connect
+
+   Parameters:
+     * host - remote WebSocket server host name or IP address.
+     * port - remote WebSocket server port.
+     * path - HTTP request path used for the WebSocket upgrade request.
+     * subprotocol - WebSocket sub-protocol to request. At present, the
+       supported values are “sip” and “msrp”.
+     * cmode - set to “1” for a secure outbound connection over TLS and
+       “0” for a plain TCP connection.
+
+   RPC Command Usage:
+...
+kamctl rpc ws.connect example.com 443 /ws sip 1
+...
+
+6.6. ws.disable
 
    Disables WebSockets preventing new connections from being established.
 
@@ -653,7 +747,7 @@ kamctl rpc ws.pong 1
 kamctl rpc ws.disable
 ...
 
-6.6. ws.enable
+6.7. ws.enable
 
    Enables WebSockets allowing new connections to be established.
 
@@ -680,7 +774,7 @@ kamctl rpc ws.enable
    connection closes. The connection may be identified using the $si and
    $sp pseudo-variables.
 
-   Example 1.16. event_route[websocket:closed] usage
+   Example 1.18. event_route[websocket:closed] usage
 ...
 event_route[websocket:closed] {
         xlog("L_INFO", "WebSocket connection from $si:$sp has closed\n");
@@ -696,7 +790,7 @@ event_route[websocket:closed] {
    Connection id of closed websocket connection. Can only be used in
    websocket:closed event route.
 
-   Example 1.17. $ws_conid usage
+   Example 1.19. $ws_conid usage
 ...
 event_route[websocket:closed] {
         xlog("L_INFO", "WebSocket connection with id $ws_conid has closed\n");

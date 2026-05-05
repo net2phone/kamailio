@@ -198,6 +198,7 @@ static ENGINE *ksr_tls_engine;
 
 #ifdef KSR_SSL_PROVIDER
 static int tls_provider_quirks;
+str tls_provider_config = STR_NULL;
 #endif
 
 /*
@@ -243,6 +244,10 @@ int sr_tls_renegotiation = 0;
 int ksr_tls_init_mode = 0;
 int ksr_tls_key_password_mode = 0;
 int *ksr_tls_keylog_mode = NULL;
+#ifdef KSR_SSL_COMMON
+/** SSL_CTX ex_data index for JIT engine key scratch; -1 until mod_init. */
+int ksr_tls_jit_key_ex_idx = -1;
+#endif /* KSR_SSL_COMMON */
 str ksr_tls_keylog_file = STR_NULL;
 str ksr_tls_keylog_peer = STR_NULL;
 
@@ -285,6 +290,8 @@ static param_export_t params[] = {
 			&tls_engine_settings.engine_algorithms},
 #endif /* KSR_SSL_ENGINE */
 #ifdef KSR_SSL_PROVIDER
+	{"provider_quirks_config", PARAM_STR,
+	 &tls_provider_config},
 	{"provider_quirks", PARAM_INT,
 			&tls_provider_quirks}, /* OpenSSL 3 provider that needs new
 									  OSSL_LIB_CTX in child */
@@ -381,22 +388,17 @@ static tls_domains_cfg_t* tls_use_modparams(void)
  *     is < 10
  *
  */
-static int tls_pthreads_key_mark;
-static void fork_child(void)
+static void tls_atfork_prepare(void)
 {
-	int k;
-	for(k = 0; k < tls_pthreads_key_mark; k++) {
-		if(pthread_getspecific(k) != 0)
-			pthread_setspecific(k, 0x0);
-	}
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	OPENSSL_thread_stop();
+#endif
 }
 
 static int mod_init(void)
 {
 	int method;
 	int verify_client;
-	unsigned char rand_buf[32];
-	int k;
 
 #ifdef STATISTICS
 	/* register statistics */
@@ -405,25 +407,23 @@ static int mod_init(void)
 		return -1;
 	}
 #endif
-#if OPENSSL_VERSION_NUMBER >= 0x10101000L
-	{
-		pthread_key_t _ksr_tsd_init;
-		pthread_key_create(&_ksr_tsd_init, NULL);
-		pthread_key_delete(_ksr_tsd_init);
-	}
-	for(k = 0; k < 32; k++) {
-		if(pthread_getspecific(k) != 0) {
-			LM_WARN("detected initialized thread-locals created before tls.so; "
-					"tls.so must be the first module loaded\n");
-		}
-	}
 
+#if OPENSSL_VERSION_NUMBER >= 0x10101000L
 	if(ksr_tls_threads_mode == KSR_TLS_THREADS_MTEMP) {
 		LM_WARN("tls_threads_mode=1 is invalid on kamailio version >= 6; "
 				"forcing tls_threads_mode=2\n");
 		ksr_tls_threads_mode = KSR_TLS_THREADS_MFORK;
 	}
 #endif /*  OPENSSL_VERSION_NUMBER*/
+
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L \
+		&& OPENSSL_VERSION_NUMBER < 0x30200000L
+	unsigned long run_ver = OpenSSL_version_num();
+	if(run_ver >= 0x30200000L) {
+		LM_ERR("OpenSSL version < 3.2.0 is required\n");
+		return -1;
+	}
+#endif
 
 	if(tls_disable) {
 		LM_WARN("tls support is disabled "
@@ -547,25 +547,8 @@ static int mod_init(void)
 #endif
 	if(ksr_tls_threads_mode == KSR_TLS_THREADS_MFORK
 			&& ksr_tcp_main_threads == 0) {
-		pthread_atfork(NULL, NULL, &fork_child);
+		pthread_atfork(&tls_atfork_prepare, NULL, NULL);
 	}
-
-#if OPENSSL_VERSION_NUMBER >= 0x010101000L
-	/*
-	 * force creation of all thread-locals now so that other libraries
-	 * that use pthread_key_create(), e.g. python,
-	 * will have larger key values
-	 */
-	if(ksr_tls_threads_mode > KSR_TLS_THREADS_MNONE) {
-		ERR_clear_error();
-		RAND_bytes(rand_buf, sizeof(rand_buf));
-		for(k = 0; k < 32; k++) {
-			if(pthread_getspecific(k))
-				tls_pthreads_key_mark = k + 1;
-		}
-		LM_WARN("set maximum pthreads key to %d\n", tls_pthreads_key_mark);
-	}
-#endif
 
 	if(ksr_tls_keylog_file_init() < 0) {
 		LM_ERR("failed to init keylog file\n");
@@ -575,6 +558,18 @@ static int mod_init(void)
 		LM_ERR("failed to init keylog peer\n");
 		goto error;
 	}
+
+#ifdef KSR_SSL_COMMON
+	/* Register SSL_CTX ex_data slot for JIT engine key loading (MP-mode).
+	 * Must be done before tls_fix_domains_cfg() creates any SSL_CTX. */
+	ksr_tls_jit_key_ex_idx =
+			SSL_CTX_get_ex_new_index(0, "ksr_jit_key", NULL, NULL, NULL);
+	if(ksr_tls_jit_key_ex_idx < 0) {
+		LM_ERR("failed to allocate SSL_CTX ex_data index for JIT key\n");
+		goto error;
+	}
+	LM_DBG("SSL_CTX JIT key ex_data index = %d\n", ksr_tls_jit_key_ex_idx);
+#endif /* KSR_SSL_COMMON */
 
 	return 0;
 error:
@@ -601,6 +596,10 @@ int tls_fix_engine_keys(tls_domains_cfg_t *, tls_domain_t *, tls_domain_t *);
  *
  * @return 0 on success, -1 on failure
  */
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+void load_p11_via_nconf(const char *config_path);
+#endif /*  OPENSSL_VERSION_NUMBER */
+
 int tls_reload_engine_keys(void)
 {
 #ifdef KSR_SSL_ENGINE
@@ -610,16 +609,35 @@ int tls_reload_engine_keys(void)
 
 #ifdef KSR_SSL_PROVIDER
 	if(tls_provider_quirks & 1) {
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+		load_p11_via_nconf(tls_provider_config.s);
+#else
 		OSSL_LIB_CTX *new_ctx = OSSL_LIB_CTX_new();
+		if(CONF_modules_load_file_ex(
+				   new_ctx, CONF_get1_default_config_file(), NULL, 0L)
+				<= 0) {
+			LM_ERR("Failed to load provider config in child %d\n", process_no);
+		}
 		OSSL_LIB_CTX_set0_default(new_ctx);
-		CONF_modules_load_file(CONF_get1_default_config_file(), NULL, 0L);
+#endif
 	}
 #endif /* KSR_SSL_PROVIDER */
 	if(tls_engine_init() < 0)
 		return -1;
-	if(tls_fix_engine_keys(*tls_domains_cfg, &srv_defaults, &cli_defaults) < 0)
-		return -1;
-	LM_INFO("HSM/engine keys reloaded\n");
+	if(ksr_tcp_main_threads > 0) {
+		/* MT-mode: PROC_TCP_MAIN owns the single SSL_CTX — load now. */
+		if(tls_fix_engine_keys(*tls_domains_cfg, &srv_defaults, &cli_defaults)
+				< 0)
+			return -1;
+		LM_INFO("HSM/engine keys reloaded\n");
+	} else {
+		/* MP-mode: tls_fix_domains_cfg() already stored key URIs in
+		 * each ctx[N] ex_data slot; workers JIT load at next SSL_new().
+		 * tls_engine_init() above keeps the calling process's ENGINE
+		 * handle current in case it re-enters this path. */
+		LM_DBG("MP-mode: engine key URIs staged in ctx ex_data;"
+			   " workers will JIT load at next SSL_new()\n");
+	}
 	return 0;
 }
 #endif /* KSR_SSL_COMMON */
@@ -653,9 +671,75 @@ static int mod_child_hook(int *rank, void *dummy)
 }
 
 #ifdef KSR_SSL_PROVIDER
-static OSSL_LIB_CTX *orig_ctx;
-static OSSL_LIB_CTX *new_ctx;
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+
+#include <openssl/conf.h>
+#include <openssl/provider.h>
+#include <openssl/params.h>
+
+void load_p11_via_nconf(const char *config_path)
+{
+	CONF *conf = NCONF_new(NULL);
+	STACK_OF(CONF_VALUE) * sec;
+	OSSL_PARAM params[16]; // Ensure this is large enough for your keys
+	int p_idx = 0;
+	char *q_sect = NULL;
+	char *q_prov = NULL;
+
+	// 1. Load the file into a private NCONF object
+	if(NCONF_load(conf, config_path, NULL) <= 0) {
+		// Handle error: File not found or syntax error
+		return;
+	}
+	q_sect = NCONF_get_string(conf, NULL, "quirks_sect"); // e.g., pkcs11_sect
+	q_prov = NCONF_get_string(conf, NULL, "quirks_provider"); // e.g., pkcs11
+
+	if(!q_sect || !q_prov) {
+		LM_ERR("quirks file %s missing quirks_sect or quirks_provider in "
+			   "[default]\n",
+				config_path);
+		goto cleanup;
+	}
+	// 2. Get the specific section [pkcs11_sect]
+	sec = NCONF_get_section(conf, q_sect);
+	if(!sec)
+		return;
+
+	// 3. Iterate pairs and build the OSSL_PARAM array
+	for(int i = 0; i < sk_CONF_VALUE_num(sec); i++) {
+		CONF_VALUE *v = sk_CONF_VALUE_value(sec, i);
+
+		// Map string values to OSSL_PARAMS
+		// Note: In a real app, ensure these strings persist until OSSL_PROVIDER_load
+		params[p_idx++] =
+				OSSL_PARAM_construct_utf8_string(v->name, v->value, 0);
+
+		if(p_idx >= 15)
+			break;
+	}
+	params[p_idx] = OSSL_PARAM_construct_end();
+
+	// 4. Load into a fresh Child Context
+	OSSL_LIB_CTX *child_ctx = OSSL_LIB_CTX_new();
+	OSSL_LIB_CTX_set0_default(child_ctx);
+	OSSL_PROVIDER_load(child_ctx, "default");
+
+	OSSL_PROVIDER *p11 = OSSL_PROVIDER_load_ex(child_ctx, q_prov, params);
+
+	if(p11) {
+		LM_INFO("%s: Successfully bootstrapped PKCS11 via NCONF abstraction\n",
+				config_path);
+	} else {
+		LM_ERR("failed to load provider %s from quirks file\n", q_prov);
+	}
+
+cleanup:
+	NCONF_free(
+			conf); // The params now live in the provider, we can free the parser
+}
 #endif
+#endif
+
 static int mod_child(int rank)
 {
 	if(tls_disable || (tls_domains_cfg == 0))
@@ -690,17 +774,37 @@ static int mod_child(int rank)
 			|| (rank == PROC_TCP_MAIN && ksr_tcp_main_threads > 0)) {
 #ifdef KSR_SSL_PROVIDER
 		if(tls_provider_quirks & 1) {
-			new_ctx = OSSL_LIB_CTX_new();
-			orig_ctx = OSSL_LIB_CTX_set0_default(new_ctx);
-			CONF_modules_load_file(CONF_get1_default_config_file(), NULL, 0L);
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+			load_p11_via_nconf(tls_provider_config.s);
+#else
+			OSSL_LIB_CTX *new_ctx = OSSL_LIB_CTX_new();
+			if(CONF_modules_load_file_ex(
+					   new_ctx, CONF_get1_default_config_file(), NULL, 0L)
+					<= 0) {
+				LM_ERR("Failed to load provider config in child %d\n",
+						process_no);
+			}
+			OSSL_LIB_CTX_set0_default(new_ctx);
+#endif
 		}
 #endif /* KSR_SSL_PROVIDER */
 		if(tls_engine_init() < 0)
 			return -1;
-		if(tls_fix_engine_keys(*tls_domains_cfg, &srv_defaults, &cli_defaults)
-				< 0)
-			return -1;
-		LM_INFO("OpenSSL loaded private keys in child: %d\n", rank);
+		if(ksr_tcp_main_threads > 0) {
+			/* MT-mode: PROC_TCP_MAIN owns the single SSL_CTX — load now. */
+			if(tls_fix_engine_keys(
+					   *tls_domains_cfg, &srv_defaults, &cli_defaults)
+					< 0)
+				return -1;
+			LM_INFO("OpenSSL loaded private keys in child: %d\n", rank);
+		} else {
+			/* MP-mode: key URIs already stored in each ctx[N] ex_data
+			 * slot by load_private_key() at tls_fix_domains_cfg() time.
+			 * Each worker loads its own key JIT at the first SSL_new(). */
+			LM_DBG("MP-mode: engine key loading deferred (JIT) for"
+				   " rank=%d\n",
+					rank);
+		}
 	}
 #endif /* KSR_SSL_COMMON */
 	return 0;
@@ -924,6 +1028,12 @@ static int tls_engine_init()
 	STACK_OF(CONF_VALUE) * stack;
 	CONF_VALUE *confval;
 	ENGINE *e;
+
+	if(ksr_tls_engine) {
+		LM_INFO("OpenSSL engine is already initialized, skipping...\n");
+		/* this is a reload */
+		return 0;
+	}
 
 	LM_INFO("With OpenSSL engine support %*s\n",
 			tls_engine_settings.engine_config.len,

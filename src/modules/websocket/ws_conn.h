@@ -44,10 +44,27 @@ typedef enum
 	WS_S_CLOSED /* Never used - included for completeness */
 } ws_conn_state_t;
 
+typedef enum
+{
+	WS_ROLE_SERVER = 0,
+	WS_ROLE_CLIENT
+} ws_conn_role_t;
+
+#define WS_HANDSHAKE_KEY_SIZE 64
+
+typedef struct ws_send_item
+{
+	struct ws_send_item *next;
+	unsigned int len;
+	char data[1];
+} ws_send_item_t;
+
 typedef struct ws_connection
 {
 	ws_conn_state_t state;
+	ws_conn_role_t role;
 	int awaiting_pong;
+	int stats_enabled;
 	ticks_t rmticks;
 
 	int last_used;
@@ -65,6 +82,14 @@ typedef struct ws_connection
 
 	atomic_t refcnt;
 	int run_event;
+	int handshake_key_len;
+	char handshake_key[WS_HANDSHAKE_KEY_SIZE];
+	int target_port;
+	int target_proto;
+	str target_host;
+	str target_path;
+	ws_send_item_t *sendq_head;
+	ws_send_item_t *sendq_tail;
 
 	str frag_buf;
 } ws_connection_t;
@@ -100,10 +125,18 @@ extern stat_var *ws_msrp_max_concurrent_connections;
 int wsconn_init(void);
 void wsconn_destroy(void);
 int wsconn_add(struct receive_info *rcv, unsigned int sub_protocol);
+int wsconn_add_outgoing(struct receive_info *rcv, unsigned int sub_protocol,
+		str *handshake_key, str *host, int port, str *path, int proto);
+int wsconn_mark_open(ws_connection_t *wsc);
 int wsconn_rm(ws_connection_t *wsc, ws_conn_eventroute_t run_event_route);
 int wsconn_update(ws_connection_t *wsc);
 void wsconn_close_now(ws_connection_t *wsc);
 ws_connection_t *wsconn_get(int id);
+ws_connection_t *wsconn_get_outgoing(
+		str *host, int port, str *path, int proto, unsigned int sub_protocol);
+int wsconn_sendq_push(ws_connection_t *wsc, const char *buf, unsigned int len);
+ws_send_item_t *wsconn_sendq_detach(ws_connection_t *wsc);
+void wsconn_sendq_free_list(ws_send_item_t *head);
 int wsconn_put(ws_connection_t *wsc);
 ws_connection_t **wsconn_get_list(void);
 int wsconn_put_list(ws_connection_t **list);

@@ -36,6 +36,7 @@
 #include "../../core/parser/contact/parse_contact.h"
 #include "../../core/parser/parse_to.h"
 #include "../../core/parser/parse_from.h"
+#include "../../core/parser/parse_rr.h"
 
 #define UNSUPPORTED_HEADER "Unsupported: "
 #define UNSUPPORTED_HEADER_LEN (sizeof(UNSUPPORTED_HEADER) - 1)
@@ -330,9 +331,15 @@ int check_required_headers(sip_msg_t *msg)
 
 	if(!check_transaction_quadruple(msg)) {
 		msg->msg_flags |= FL_MSG_NOREPLY;
-		LM_DBG("check_required_headers failed\n");
+		LM_ERR("check_required_headers failed\n");
 		return SANITY_CHECK_FAILED;
 	}
+
+	if(parse_headers(msg, HDR_VIA_F, 0) != 0 || !msg->h_via1) {
+		LM_ERR("failed to parse Via header\n");
+		return SANITY_CHECK_FAILED;
+	}
+
 	if(parse_headers(msg, HDR_EOH_F, 0) != 0) {
 		LM_ERR("failed to parse headers\n");
 		if(sanity_reply(msg, 400, "Bad Headers") < 0) {
@@ -364,10 +371,76 @@ int check_via1_header(sip_msg_t *msg)
 		return SANITY_CHECK_FAILED;
 	}
 
-	if(msg->via1->host.s == NULL || msg->via1->host.len < 0) {
+	if(msg->via1->host.s == NULL || msg->via1->host.len <= 0) {
 		LM_WARN("failed to parse the Via1 host\n");
 		msg->msg_flags |= FL_MSG_NOREPLY;
 		return SANITY_CHECK_FAILED;
+	}
+
+	if(msg->via1->branch == NULL || msg->via1->branch->value.len <= 0) {
+		LM_WARN("failed to parse the Via1 branch\n");
+		msg->msg_flags |= FL_MSG_NOREPLY;
+		return SANITY_CHECK_FAILED;
+	}
+
+	return SANITY_CHECK_PASSED;
+}
+
+/* check multiple conditions regarding RFC3261
+	1. via branch parameter starts with the magic cookie
+	2. for Record-Route headers check that the lr parameter is present
+*/
+int check_rfc3261_compliance(sip_msg_t *msg)
+{
+	hdr_field_t *hf;
+	rr_t *rr;
+	sip_uri_t parsed_uri;
+
+	LM_DBG("check via1 branch\n");
+	if(parse_headers(msg, HDR_VIA1_F, 0) != 0) {
+		LM_WARN("failed to parse the Via1 header\n");
+		msg->msg_flags |= FL_MSG_NOREPLY;
+		return SANITY_CHECK_FAILED;
+	}
+
+
+	if(msg->via1->branch->value.len < 7
+			|| memcmp(msg->via1->branch->value.s, "z9hG4bK", 7) != 0) {
+		LM_WARN("Via1 branch parameter does not start with the magic cookie\n");
+		msg->msg_flags |= FL_MSG_NOREPLY;
+		return SANITY_CHECK_FAILED;
+	}
+
+	/* Check lr parameter for Record-Route */
+	LM_DBG("check Record-Route lr parameter for all RR headers\n");
+
+	if(parse_record_route_headers(msg) != 0) {
+		LM_WARN("failed to parse the Record-Route headers\n");
+		msg->msg_flags |= FL_MSG_NOREPLY;
+		return SANITY_CHECK_FAILED;
+	}
+
+	hf = msg->record_route;
+	while(hf) {
+		if(hf->parsed == NULL) {
+			LM_WARN("failed to parse the Record-Route header body\n");
+			msg->msg_flags |= FL_MSG_NOREPLY;
+			return SANITY_CHECK_FAILED;
+		}
+		rr = hf->parsed;
+		if(parse_uri(rr->nameaddr.uri.s, rr->nameaddr.uri.len, &parsed_uri)
+				!= 0) {
+			LM_WARN("failed to parse the Record-Route URI\n");
+			msg->msg_flags |= FL_MSG_NOREPLY;
+			return SANITY_CHECK_FAILED;
+		}
+
+		if(parsed_uri.lr.len == 0 || parsed_uri.lr.s == NULL) {
+			LM_WARN("missing lr parameter in Record-Route URI\n");
+			msg->msg_flags |= FL_MSG_NOREPLY;
+			return SANITY_CHECK_FAILED;
+		}
+		hf = next_sibling_hdr(hf);
 	}
 
 	return SANITY_CHECK_PASSED;
@@ -736,7 +809,14 @@ int check_proxy_require(sip_msg_t *msg)
 					memcpy(u + UNSUPPORTED_HEADER_LEN, r_pr->s.s, r_pr->s.len);
 					memcpy(u + UNSUPPORTED_HEADER_LEN + r_pr->s.len, CRLF,
 							CRLF_LEN);
-					add_lump_rpl(msg, u, u_len, LUMP_RPL_HDR);
+					if(add_lump_rpl(msg, u, u_len, LUMP_RPL_HDR) == 0) {
+						LM_ERR("failed to append Unsupported header to "
+							   "reply\n");
+						pkg_free(u);
+						u = NULL;
+					} else {
+						u = NULL;
+					}
 				}
 
 				if(sanity_reply(msg, 420, "Bad Proxy Require Extension") < 0) {

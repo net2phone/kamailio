@@ -27,22 +27,34 @@
  */
 
 #include "../../core/basex.h"
+#include "../../core/char_msg_val.h"
 #include "../../core/data_lump_rpl.h"
 #include "../../core/dprint.h"
+#include "../../core/forward.h"
 #include "../../core/locking.h"
+#include "../../core/hash_func.h"
+#include "../../core/msg_translator.h"
 #include "../../core/str.h"
+#include "../../core/trim.h"
 #include "../../core/tcp_conn.h"
+#include "../../core/tcp_server.h"
 #include "../../core/counters.h"
 #include "../../core/strutils.h"
+#include "../../core/crypto/md5utils.h"
 #include "../../core/crypto/shautils.h"
+#include "../../core/globals.h"
 #include "../../core/mem/mem.h"
+#include "../../core/mod_fix.h"
 #include "../../core/parser/msg_parser.h"
+#include "../../core/proxy.h"
+#include "../../core/rand/cryptorand.h"
 #include "../sl/sl.h"
 #include "../tls/tls_cfg.h"
 #include "ws_conn.h"
 #include "ws_handshake.h"
 #include "websocket.h"
 #include "config.h"
+#include <strings.h>
 
 #define WS_VERSION (13)
 
@@ -93,6 +105,370 @@ static str str_status_service_unavailable = str_init("Service Unavailable");
 static char headers_buf[HDR_BUF_LEN];
 
 static char key_buf[base64_enc_len(SHA1_DIGEST_LENGTH)];
+
+static int ws_token_contains(const str *value, const str *token)
+{
+	int i;
+
+	if(value == NULL || token == NULL || value->s == NULL || token->s == NULL
+			|| value->len < token->len)
+		return 0;
+
+	for(i = 0; i <= value->len - token->len; i++) {
+		if(strncasecmp(value->s + i, token->s, token->len) == 0)
+			return 1;
+	}
+
+	return 0;
+}
+
+static int ws_str_eq(const str *v1, const str *v2)
+{
+	if(v1 == NULL || v2 == NULL || v1->len != v2->len)
+		return 0;
+	return (strncasecmp(v1->s, v2->s, v1->len) == 0) ? 1 : 0;
+}
+
+static int ws_compute_accept(str *key, char *obuf, int olen)
+{
+	unsigned char sha1[SHA1_DIGEST_LENGTH];
+	char *tmpbuf;
+	int tmplen;
+	int ret;
+
+	tmplen = key->len + str_ws_guid.len;
+	tmpbuf = (char *)pkg_malloc(tmplen);
+	if(tmpbuf == NULL) {
+		PKG_MEM_ERROR;
+		return -1;
+	}
+
+	memcpy(tmpbuf, key->s, key->len);
+	memcpy(tmpbuf + key->len, str_ws_guid.s, str_ws_guid.len);
+	compute_sha1_raw(sha1, (u_int8_t *)tmpbuf, tmplen);
+	pkg_free(tmpbuf);
+
+	ret = base64_enc(sha1, SHA1_DIGEST_LENGTH, (unsigned char *)obuf, olen);
+	return ret;
+}
+
+static int ws_parse_sub_protocol(str *sub_protocol, unsigned int *sub_proto)
+{
+	if(sub_protocol == NULL || sub_protocol->s == NULL
+			|| sub_protocol->len <= 0)
+		return -1;
+
+	if(sub_protocol->len == str_sip.len
+			&& strncasecmp(sub_protocol->s, str_sip.s, str_sip.len) == 0) {
+		*sub_proto = SUB_PROTOCOL_SIP;
+		return 0;
+	}
+
+	if(sub_protocol->len == str_msrp.len
+			&& strncasecmp(sub_protocol->s, str_msrp.s, str_msrp.len) == 0) {
+		*sub_proto = SUB_PROTOCOL_MSRP;
+		return 0;
+	}
+
+	return -1;
+}
+
+int ws_parse_url(str *wsurl, ws_address_t *waddr)
+{
+	char *p;
+	char *end;
+	char *hstart;
+	char *hend;
+	char *ppos;
+	int port_no = 0;
+
+	if(wsurl == NULL || wsurl->s == NULL || wsurl->len <= 0 || waddr == NULL) {
+		LM_ERR("invalid parameters for websocket url parsing\n");
+		return -1;
+	}
+
+	memset(waddr, 0, sizeof(*waddr));
+
+	p = wsurl->s;
+	end = wsurl->s + wsurl->len;
+
+	if(wsurl->len >= 5 && strncasecmp(p, "ws://", 5) == 0) {
+		waddr->proto.s = p;
+		waddr->proto.len = 2;
+		waddr->proto_no = PROTO_WS;
+		p += 5;
+	} else if(wsurl->len >= 6 && strncasecmp(p, "wss://", 6) == 0) {
+		waddr->proto.s = p;
+		waddr->proto.len = 3;
+		waddr->proto_no = PROTO_WSS;
+		p += 6;
+	} else {
+		LM_ERR("websocket url must start with ws:// or wss://\n");
+		return -1;
+	}
+
+	if(p >= end) {
+		LM_ERR("websocket url missing host\n");
+		return -1;
+	}
+
+	hstart = p;
+	ppos = memchr(p, '/', end - p);
+	hend = (ppos != NULL) ? ppos : end;
+	if(hstart >= hend) {
+		LM_ERR("websocket url missing host\n");
+		return -1;
+	}
+
+	if(*hstart == '[') {
+		char *brend;
+
+		brend = memchr(hstart + 1, ']', hend - hstart - 1);
+		if(brend == NULL) {
+			LM_ERR("invalid websocket url: unterminated IPv6 host\n");
+			return -1;
+		}
+		waddr->host.s = hstart + 1;
+		waddr->host.len = brend - (hstart + 1);
+		if(brend + 1 < hend) {
+			if(*(brend + 1) != ':') {
+				LM_ERR("invalid websocket url after IPv6 host\n");
+				return -1;
+			}
+			waddr->port.s = brend + 2;
+			waddr->port.len = hend - waddr->port.s;
+			if(waddr->port.len <= 0) {
+				LM_ERR("websocket url has empty port\n");
+				return -1;
+			}
+		}
+	} else {
+		char *colon;
+
+		colon = memchr(hstart, ':', hend - hstart);
+		if(colon != NULL) {
+			waddr->host.s = hstart;
+			waddr->host.len = colon - hstart;
+			waddr->port.s = colon + 1;
+			waddr->port.len = hend - waddr->port.s;
+			if(waddr->port.len <= 0) {
+				LM_ERR("websocket url has empty port\n");
+				return -1;
+			}
+		} else {
+			waddr->host.s = hstart;
+			waddr->host.len = hend - hstart;
+		}
+	}
+
+	if(waddr->host.len <= 0) {
+		LM_ERR("websocket url has empty host\n");
+		return -1;
+	}
+
+	if(waddr->port.len > 0) {
+		if(str2sint(&waddr->port, &port_no) < 0 || port_no <= 0
+				|| port_no > 65535) {
+			LM_ERR("websocket url has invalid port\n");
+			return -1;
+		}
+		waddr->port_no = port_no;
+	} else if(waddr->proto_no == PROTO_WS) {
+		waddr->port_no = SIP_PORT;
+	} else {
+		waddr->port_no = SIPS_PORT;
+	}
+
+	if(ppos != NULL) {
+		waddr->path.s = ppos;
+		waddr->path.len = end - ppos;
+	} else {
+		waddr->path.s = end;
+		waddr->path.len = 0;
+	}
+
+	return 0;
+}
+
+static str *ws_sub_protocol_name(unsigned int sub_proto)
+{
+	if(sub_proto == SUB_PROTOCOL_SIP)
+		return &str_sip;
+	if(sub_proto == SUB_PROTOCOL_MSRP)
+		return &str_msrp;
+	return NULL;
+}
+
+static struct tcp_connection *ws_find_tcp_connection(dest_info_t *dst)
+{
+	union sockaddr_union local_addr;
+	union sockaddr_union *from = NULL;
+	struct ip_addr ip;
+	int port;
+
+	port = su_getport(&dst->to);
+	if(port == 0)
+		return NULL;
+
+	if(dst->ephemeral.vset) {
+		if(init_su(&local_addr, &dst->ephemeral.ip, dst->ephemeral.port) == 0)
+			from = &local_addr;
+	}
+
+	su2ip_addr(&ip, &dst->to);
+	return tcpconn_lookup(0, &ip, port, from,
+			(dst->ephemeral.vset) ? dst->ephemeral.port : 0, 0, dst->proto);
+}
+
+static int ws_response_get_header(
+		char *buf, unsigned int len, str *hname, str *hval)
+{
+	char *p;
+	char *end;
+	char *line_end;
+	char *colon;
+	str vtmp;
+
+	p = buf;
+	end = buf + len;
+
+	line_end = strstr(p, "\r\n");
+	if(line_end == NULL)
+		return -1;
+	p = line_end + 2;
+
+	while(p < end && !(p[0] == '\r' && p + 1 < end && p[1] == '\n')) {
+		line_end = strstr(p, "\r\n");
+		if(line_end == NULL)
+			line_end = end;
+		colon = memchr(p, ':', line_end - p);
+		if(colon != NULL) {
+			if((int)(colon - p) == hname->len
+					&& strncasecmp(p, hname->s, hname->len) == 0) {
+				vtmp.s = colon + 1;
+				vtmp.len = line_end - vtmp.s;
+				trim(&vtmp);
+				*hval = vtmp;
+				return 0;
+			}
+		}
+		p = line_end + 2;
+	}
+
+	return -1;
+}
+
+static void ws_mark_failed_client(ws_connection_t *wsc)
+{
+	if(wsc == NULL)
+		return;
+
+	wsconn_rm(wsc, WSCONN_EVENTROUTE_NO);
+	wsconn_put(wsc);
+}
+
+static int ws_send_buffer(int conid, char *buf, unsigned int len)
+{
+	ws_event_info_t wsev;
+	sr_event_param_t evp = {0};
+
+	memset(&wsev, 0, sizeof(ws_event_info_t));
+	wsev.type = SREV_TCP_WS_FRAME_OUT;
+	wsev.buf = buf;
+	wsev.len = len;
+	wsev.id = conid;
+	evp.data = (void *)&wsev;
+
+	return (sr_event_exec(SREV_TCP_WS_FRAME_OUT, &evp) < 0) ? -1 : 1;
+}
+
+static int ws_flush_send_queue(ws_connection_t *wsc)
+{
+	ws_send_item_t *item;
+	ws_send_item_t *next;
+
+	if(wsc == NULL)
+		return -1;
+
+	item = wsconn_sendq_detach(wsc);
+	while(item != NULL) {
+		next = item->next;
+		if(ws_send_buffer(wsc->id, item->data, item->len) < 0) {
+			LM_ERR("failed to flush websocket send queue for connection %d\n",
+					wsc->id);
+			wsconn_sendq_free_list(next);
+			shm_free(item);
+			return -1;
+		}
+		shm_free(item);
+		item = next;
+	}
+
+	return 0;
+}
+
+static char *ws_build_req_buf(
+		sip_msg_t *msg, str *host, int port, int cmode, unsigned int *outlen)
+{
+	char md5[MD5_LEN];
+	unsigned short dport;
+	char *buf = NULL;
+	dest_info_t dst;
+	proxy_l_t *proxy = NULL;
+
+	if(msg == NULL || outlen == NULL)
+		return NULL;
+
+	if(msg->first_line.type != SIP_REQUEST) {
+		LM_ERR("ws_send() supports only SIP requests\n");
+		return NULL;
+	}
+
+	memset(&dst, 0, sizeof(dst));
+	dport = (unsigned short)((port > 0) ? port
+										: ((cmode) ? SIPS_PORT : SIP_PORT));
+
+	proxy = mk_proxy(host, dport, (cmode) ? PROTO_WSS : PROTO_WS);
+	if(proxy == NULL) {
+		LM_ERR("failed to resolve outbound websocket target\n");
+		goto done;
+	}
+	if(proxy2su(&dst.to, proxy) < 0) {
+		LM_ERR("failed to build outbound websocket socket address\n");
+		goto done;
+	}
+
+	dst.proto = (cmode) ? PROTO_WSS : PROTO_WS;
+	dst.send_flags = msg->fwd_send_flags;
+	dst.send_flags.f |= SND_F_WSX_OUTBOUND;
+	dst.send_sock = get_send_socket(msg, &dst.to, dst.proto);
+	if(dst.send_sock == NULL) {
+		LM_ERR("cannot find send socket for outbound websocket request\n");
+		goto done;
+	}
+
+	if(!char_msg_val(msg, md5)) {
+		LM_ERR("char_msg_val failed\n");
+		goto done;
+	}
+	msg->hash_index = hash(msg->callid->body, get_cseq(msg)->number);
+	if(!branch_builder(msg->hash_index, 0, md5, NULL, 0, msg->add_to_branch_s,
+			   &msg->add_to_branch_len)) {
+		LM_ERR("branch_builder failed\n");
+		goto done;
+	}
+
+	buf = build_req_buf_from_sip_req(msg, outlen, &dst, 0, NULL);
+	if(buf == NULL) {
+		LM_ERR("failed to build outbound websocket request buffer\n");
+		goto done;
+	}
+
+done:
+	if(proxy != NULL)
+		free_proxy(proxy);
+	return buf;
+}
 
 static int ws_send_reply(sip_msg_t *msg, int code, str *reason, str *hdrs)
 {
@@ -382,6 +758,463 @@ int w_ws_handle_handshake(sip_msg_t *msg, char *p1, char *p2)
 	return ws_handle_handshake(msg);
 }
 
+int ws_connect(sip_msg_t *msg, str *host, int port, str *path,
+		str *sub_protocol, int cmode)
+{
+	char reqbuf[2048];
+	unsigned int sub_proto = 0;
+	unsigned int i;
+	unsigned char raw_key[16];
+	str key = STR_NULL;
+	str req = STR_NULL;
+	str *subpname;
+	str lpath;
+	str host_hdr;
+	proxy_l_t *proxy = NULL;
+	dest_info_t dst;
+	struct tcp_connection *con = NULL;
+	receive_info_t rcv;
+	int req_len;
+	int ret = -1;
+	char hostbuf[512];
+
+	memset(&dst, 0, sizeof(dest_info_t));
+	(void)msg;
+
+	if(cfg_get(websocket, ws_cfg, enabled) == 0) {
+		LM_INFO("disabled: outbound websocket handshake refused\n");
+		return -1;
+	}
+
+	if(host == NULL || host->s == NULL || host->len <= 0) {
+		LM_ERR("missing host for outbound websocket connection\n");
+		return -1;
+	}
+
+	if(ws_parse_sub_protocol(sub_protocol, &sub_proto) < 0) {
+		LM_ERR("unsupported websocket sub-protocol: %.*s\n", sub_protocol->len,
+				sub_protocol->s);
+		return -1;
+	}
+
+	if((sub_proto & ws_sub_protocols) == 0) {
+		LM_ERR("websocket sub-protocol %.*s is not enabled\n",
+				sub_protocol->len, sub_protocol->s);
+		return -1;
+	}
+
+	if(port <= 0)
+		port = (cmode) ? 443 : 80;
+
+	lpath = *path;
+	if(lpath.s == NULL || lpath.len <= 0) {
+		lpath.s = "/";
+		lpath.len = 1;
+	}
+
+	proxy = mk_proxy(
+			host, (unsigned short)port, (cmode) ? PROTO_TLS : PROTO_TCP);
+	if(proxy == NULL) {
+		LM_ERR("failed to resolve outbound websocket host\n");
+		return -1;
+	}
+	if(proxy2su(&dst.to, proxy) < 0) {
+		LM_ERR("failed to build destination socket address\n");
+		goto done;
+	}
+
+	dst.proto = (cmode) ? PROTO_TLS : PROTO_TCP;
+	SND_FLAGS_INIT(&dst.send_flags);
+	dst.send_flags.f |= SND_F_FORCE_PROTO;
+
+	con = ws_find_tcp_connection(&dst);
+	if(con != NULL) {
+		LM_ERR("refusing outbound websocket handshake on an existing %s "
+			   "connection"
+			   " (id: %d)\n",
+				(cmode) ? "tls" : "tcp", con->id);
+		tcpconn_put(con);
+		con = NULL;
+		goto done;
+	}
+
+	for(i = 0; i < sizeof(raw_key) / sizeof(unsigned int); i++) {
+		unsigned int rval = cryptorand();
+		memcpy(raw_key + (i * sizeof(unsigned int)), &rval,
+				sizeof(unsigned int));
+	}
+	key.s = key_buf;
+	key.len = base64_enc(raw_key, sizeof(raw_key), (unsigned char *)key.s,
+			base64_enc_len(sizeof(raw_key)));
+
+	if(host->len >= (int)sizeof(hostbuf) - 16) {
+		LM_ERR("host header too long\n");
+		goto done;
+	}
+	if(memchr(host->s, ':', host->len) && host->s[0] != '[') {
+		host_hdr.len = snprintf(hostbuf, sizeof(hostbuf), "[%.*s]:%d",
+				host->len, host->s, port);
+	} else {
+		host_hdr.len = snprintf(
+				hostbuf, sizeof(hostbuf), "%.*s:%d", host->len, host->s, port);
+	}
+	host_hdr.s = hostbuf;
+
+	subpname = ws_sub_protocol_name(sub_proto);
+	if(subpname == NULL)
+		goto done;
+
+	req_len = snprintf(reqbuf, sizeof(reqbuf),
+			"GET %.*s HTTP/1.1\r\n"
+			"Host: %.*s\r\n"
+			"Upgrade: websocket\r\n"
+			"Connection: Upgrade\r\n"
+			"Sec-WebSocket-Key: %.*s\r\n"
+			"Sec-WebSocket-Version: %d\r\n"
+			"Sec-WebSocket-Protocol: %.*s\r\n"
+			"\r\n",
+			lpath.len, lpath.s, host_hdr.len, host_hdr.s, key.len, key.s,
+			WS_VERSION, subpname->len, subpname->s);
+	if(req_len <= 0 || req_len >= (int)sizeof(reqbuf)) {
+		LM_ERR("outbound websocket handshake request too large\n");
+		goto done;
+	}
+	req.s = reqbuf;
+	req.len = req_len;
+
+	if(tcp_send(&dst, 0, req.s, req.len) < 0) {
+		LM_ERR("sending outbound websocket handshake failed\n");
+		goto done;
+	}
+
+	con = ws_find_tcp_connection(&dst);
+	if(con == NULL) {
+		LM_ERR("cannot retrieve outbound websocket tcp connection after "
+			   "send\n");
+		goto done;
+	}
+
+	con->req.flags |= F_TCP_REQ_WS_HANDSHAKE;
+	rcv = con->rcv;
+	rcv.proto_reserved1 = con->id;
+	if(wsconn_add_outgoing(&rcv, sub_proto, &key, host, port, &lpath,
+			   (cmode) ? PROTO_WSS : PROTO_WS)
+			< 0) {
+		LM_ERR("failed to track outbound websocket connection\n");
+		con->req.flags &= ~F_TCP_REQ_WS_HANDSHAKE;
+		goto done;
+	}
+
+	ret = 1;
+
+done:
+	if(ret < 0 && con != NULL) {
+		con->send_flags.f |= SND_F_CON_CLOSE;
+		con->state = S_CONN_BAD;
+		con->timeout = get_ticks_raw();
+	}
+	if(con)
+		tcpconn_put(con);
+	if(proxy)
+		free_proxy(proxy);
+	return ret;
+}
+
+int ws_connect_url(sip_msg_t *msg, str *wsurl, str *sub_protocol)
+{
+	ws_address_t waddr;
+
+	if(ws_parse_url(wsurl, &waddr) < 0) {
+		LM_ERR("failed to parse websocket url: %.*s\n", wsurl->len, wsurl->s);
+		return -1;
+	}
+
+	return ws_connect(msg, &waddr.host, waddr.port_no, &waddr.path,
+			sub_protocol, (waddr.proto_no == PROTO_WSS) ? 1 : 0);
+}
+
+int ws_send(sip_msg_t *msg, str *host, int port, str *path, str *sub_protocol,
+		int cmode)
+{
+	ws_connection_t *wsc = NULL;
+	unsigned int sub_proto = 0;
+	unsigned int outlen = 0;
+	str lpath = STR_NULL;
+	char *outbuf = NULL;
+	int ret;
+
+	if(msg == NULL || msg->buf == NULL || msg->len <= 0) {
+		LM_ERR("missing SIP message to send over websocket\n");
+		return -1;
+	}
+	if(host == NULL || host->s == NULL || host->len <= 0) {
+		LM_ERR("missing host for websocket send\n");
+		return -1;
+	}
+	if(ws_parse_sub_protocol(sub_protocol, &sub_proto) < 0) {
+		LM_ERR("unsupported websocket sub-protocol: %.*s\n", sub_protocol->len,
+				sub_protocol->s);
+		return -1;
+	}
+	if((sub_proto & ws_sub_protocols) == 0) {
+		LM_ERR("websocket sub-protocol %.*s is not enabled\n",
+				sub_protocol->len, sub_protocol->s);
+		return -1;
+	}
+
+	if(path != NULL)
+		lpath = *path;
+	if(lpath.s == NULL || lpath.len <= 0) {
+		lpath.s = "/";
+		lpath.len = 1;
+	}
+
+	if(port <= 0)
+		port = (cmode) ? SIPS_PORT : SIP_PORT;
+
+	outbuf = ws_build_req_buf(msg, host, port, cmode, &outlen);
+	if(outbuf == NULL)
+		return -1;
+
+	wsc = wsconn_get_outgoing(
+			host, port, &lpath, (cmode) ? PROTO_WSS : PROTO_WS, sub_proto);
+	if(wsc != NULL) {
+		if(wsc->state == WS_S_OPEN) {
+			ret = ws_send_buffer(wsc->id, outbuf, outlen);
+			wsconn_put(wsc);
+			pkg_free(outbuf);
+			return ret;
+		}
+		ret = wsconn_sendq_push(wsc, outbuf, outlen);
+		if(ret == 0) {
+			wsconn_put(wsc);
+			pkg_free(outbuf);
+			return 1;
+		}
+		if(ret < 0) {
+			wsconn_put(wsc);
+			pkg_free(outbuf);
+			return -1;
+		}
+		wsconn_put(wsc);
+	}
+
+	if(ws_connect(msg, host, port, &lpath, sub_protocol, cmode) < 0) {
+		LM_ERR("failed to initiate outbound websocket connection for send\n");
+		pkg_free(outbuf);
+		return -1;
+	}
+
+	wsc = wsconn_get_outgoing(
+			host, port, &lpath, (cmode) ? PROTO_WSS : PROTO_WS, sub_proto);
+	if(wsc == NULL) {
+		LM_ERR("cannot retrieve outbound websocket connection after connect\n");
+		pkg_free(outbuf);
+		return -1;
+	}
+
+	if(wsc->state == WS_S_OPEN) {
+		ret = ws_send_buffer(wsc->id, outbuf, outlen);
+		wsconn_put(wsc);
+		pkg_free(outbuf);
+		return ret;
+	}
+
+	ret = wsconn_sendq_push(wsc, outbuf, outlen);
+	wsconn_put(wsc);
+	if(ret == 0) {
+		pkg_free(outbuf);
+		return 1;
+	}
+	if(ret == 1) {
+		wsc = wsconn_get_outgoing(
+				host, port, &lpath, (cmode) ? PROTO_WSS : PROTO_WS, sub_proto);
+		if(wsc == NULL) {
+			pkg_free(outbuf);
+			return -1;
+		}
+		ret = ws_send_buffer(wsc->id, outbuf, outlen);
+		wsconn_put(wsc);
+		pkg_free(outbuf);
+		return ret;
+	}
+	pkg_free(outbuf);
+	return -1;
+}
+
+int w_ws_connect(sip_msg_t *msg, char *phost, char *pport, char *ppath,
+		char *psubproto, char *pcmode)
+{
+	str host = STR_NULL;
+	str path = STR_NULL;
+	str subproto = STR_NULL;
+	int port = 0;
+	int cmode = 0;
+
+	if(fixup_get_svalue(msg, (gparam_p)phost, &host) < 0)
+		return -1;
+	if(fixup_get_ivalue(msg, (gparam_p)pport, &port) < 0)
+		return -1;
+	if(fixup_get_svalue(msg, (gparam_p)ppath, &path) < 0)
+		return -1;
+	if(fixup_get_svalue(msg, (gparam_p)psubproto, &subproto) < 0)
+		return -1;
+	if(fixup_get_ivalue(msg, (gparam_p)pcmode, &cmode) < 0)
+		return -1;
+
+	return ws_connect(msg, &host, port, &path, &subproto, cmode);
+}
+
+int w_ws_connect_url(sip_msg_t *msg, char *purl, char *psubproto)
+{
+	str wsurl = STR_NULL;
+	str subproto = STR_NULL;
+
+	if(fixup_get_svalue(msg, (gparam_p)purl, &wsurl) < 0)
+		return -1;
+	if(fixup_get_svalue(msg, (gparam_p)psubproto, &subproto) < 0)
+		return -1;
+
+	return ws_connect_url(msg, &wsurl, &subproto);
+}
+
+int w_ws_send(sip_msg_t *msg, char *phost, char *pport, char *ppath,
+		char *psubproto, char *pcmode)
+{
+	str host = STR_NULL;
+	str path = STR_NULL;
+	str subproto = STR_NULL;
+	int port = 0;
+	int cmode = 0;
+
+	if(fixup_get_svalue(msg, (gparam_p)phost, &host) < 0)
+		return -1;
+	if(fixup_get_ivalue(msg, (gparam_p)pport, &port) < 0)
+		return -1;
+	if(fixup_get_svalue(msg, (gparam_p)ppath, &path) < 0)
+		return -1;
+	if(fixup_get_svalue(msg, (gparam_p)psubproto, &subproto) < 0)
+		return -1;
+	if(fixup_get_ivalue(msg, (gparam_p)pcmode, &cmode) < 0)
+		return -1;
+
+	return ws_send(msg, &host, port, &path, &subproto, cmode);
+}
+
+int ws_handle_handshake_response(sr_event_param_t *evp)
+{
+	tcp_event_info_t *tev;
+	ws_connection_t *wsc = NULL;
+	str connection = STR_NULL;
+	str upgrade = STR_NULL;
+	str accept = STR_NULL;
+	str protocol = STR_NULL;
+	str expected_accept = STR_NULL;
+	str request_key = STR_NULL;
+	str *subpname;
+	char accept_buf[base64_enc_len(SHA1_DIGEST_LENGTH)];
+	int status = 0;
+
+	if(evp == NULL || evp->data == NULL)
+		return -1;
+
+	tev = (tcp_event_info_t *)evp->data;
+	if(tev->con == NULL)
+		return -1;
+
+	wsc = wsconn_get(tev->con->id);
+	if(wsc == NULL) {
+		LM_ERR("received websocket handshake response for unknown connection "
+			   "%d\n",
+				tev->con->id);
+		return -1;
+	}
+
+	if(wsc->state != WS_S_CONNECTING || wsc->role != WS_ROLE_CLIENT) {
+		wsconn_put(wsc);
+		return 0;
+	}
+
+	if(sscanf(tev->buf, "HTTP/%*d.%*d %d", &status) != 1 || status != 101) {
+		LM_ERR("invalid websocket handshake status on connection %d\n",
+				tev->con->id);
+		goto error;
+	}
+
+	if(ws_response_get_header(
+			   tev->buf, tev->len, &str_hdr_connection, &connection)
+					< 0
+			|| ws_token_contains(&connection, &str_upgrade) == 0) {
+		LM_ERR("missing/invalid Connection header in websocket handshake\n");
+		goto error;
+	}
+
+	if(ws_response_get_header(tev->buf, tev->len, &str_hdr_upgrade, &upgrade)
+					< 0
+			|| ws_token_contains(&upgrade, &str_websocket) == 0) {
+		LM_ERR("missing/invalid Upgrade header in websocket handshake\n");
+		goto error;
+	}
+
+	if(ws_response_get_header(
+			   tev->buf, tev->len, &str_hdr_sec_websocket_accept, &accept)
+			< 0) {
+		LM_ERR("missing Sec-WebSocket-Accept header in websocket handshake\n");
+		goto error;
+	}
+
+	expected_accept.s = accept_buf;
+	request_key.s = wsc->handshake_key;
+	request_key.len = wsc->handshake_key_len;
+	expected_accept.len = ws_compute_accept(
+			&request_key, expected_accept.s, sizeof(accept_buf));
+	if(expected_accept.len <= 0 || ws_str_eq(&accept, &expected_accept) == 0) {
+		LM_ERR("Sec-WebSocket-Accept mismatch in websocket handshake\n");
+		goto error;
+	}
+
+	if(ws_response_get_header(
+			   tev->buf, tev->len, &str_hdr_sec_websocket_protocol, &protocol)
+			< 0) {
+		LM_ERR("missing Sec-WebSocket-Protocol header in websocket "
+			   "handshake\n");
+		goto error;
+	}
+
+	subpname = ws_sub_protocol_name(wsc->sub_protocol);
+	if(subpname == NULL || ws_str_eq(&protocol, subpname) == 0) {
+		LM_ERR("unexpected websocket sub-protocol in handshake response\n");
+		goto error;
+	}
+
+	if(tev->con->type == PROTO_TLS)
+		tev->con->type = tev->con->rcv.proto = PROTO_WSS;
+	else
+		tev->con->type = tev->con->rcv.proto = PROTO_WS;
+
+	tev->con->req.flags &= ~F_TCP_REQ_WS_HANDSHAKE;
+	wsconn_mark_open(wsc);
+	if(ws_flush_send_queue(wsc) < 0) {
+		update_stat(ws_failed_handshakes, 1);
+		ws_mark_failed_client(wsc);
+		return -1;
+	}
+	update_stat(ws_successful_handshakes, 1);
+	if(wsc->sub_protocol == SUB_PROTOCOL_SIP)
+		update_stat(ws_sip_successful_handshakes, 1);
+	else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP)
+		update_stat(ws_msrp_successful_handshakes, 1);
+
+	wsconn_put(wsc);
+	return 0;
+
+error:
+	tev->con->req.flags &= ~F_TCP_REQ_WS_HANDSHAKE;
+	update_stat(ws_failed_handshakes, 1);
+	ws_mark_failed_client(wsc);
+	return -1;
+}
+
 void ws_rpc_disable(rpc_t *rpc, void *ctx)
 {
 	cfg_get(websocket, ws_cfg, enabled) = 0;
@@ -394,4 +1227,27 @@ void ws_rpc_enable(rpc_t *rpc, void *ctx)
 	cfg_get(websocket, ws_cfg, enabled) = 1;
 	LM_WARN("enabling websockets\n");
 	return;
+}
+
+void ws_rpc_connect(rpc_t *rpc, void *ctx)
+{
+	str host = STR_NULL;
+	str path = STR_NULL;
+	str subproto = STR_NULL;
+	int port = 0;
+	int cmode = 0;
+
+	if(rpc->scan(ctx, "SdSSd", &host, &port, &path, &subproto, &cmode) < 5) {
+		rpc->fault(ctx, 400,
+				"Invalid parameters. Expected host, port, path, subprotocol, "
+				"tls");
+		return;
+	}
+
+	if(ws_connect(NULL, &host, port, &path, &subproto, cmode) < 0) {
+		rpc->fault(ctx, 500, "Failed to initiate outbound websocket handshake");
+		return;
+	}
+
+	rpc->rpl_printf(ctx, "Outbound websocket handshake initiated");
 }

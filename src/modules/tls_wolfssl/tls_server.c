@@ -61,6 +61,7 @@
 #include "tls_wolfssl_mod.h"
 #include "tls_server.h"
 #include "tls_select.h"
+#include "wolfssl_pkcs11.h"
 
 #include "tls_cfg.h"
 
@@ -131,6 +132,7 @@ int tls_run_event_routes(struct tcp_connection *c);
 extern str sr_tls_xavp_cfg;
 
 static str _ksr_tls_connect_server_id = STR_NULL;
+int tls_pkcs11_open_token(WOLFSSL *);
 
 static void tls_init_ssl_cache(struct tls_extra_data *tls_c)
 {
@@ -368,6 +370,9 @@ static int tls_complete_init(struct tcp_connection *c)
 	}
 	memset(data, '\0', sizeof(struct tls_extra_data));
 	data->ssl = wolfSSL_new(dom->ctx[0]);
+
+	/* Load PKCS#11 keys */
+	tls_pkcs11_open_token(data->ssl);
 	wolfSSL_BIO_new_bio_pair(
 			&internal_bio, TLS_WR_MBUF_SZ, &rw_bio, TLS_RD_MBUF_SZ);
 	data->rwbio = rw_bio;
@@ -509,6 +514,7 @@ int tls_accept(struct tcp_connection *c, int *error)
 		BUG("Invalid connection state %d (bug in TLS code)\n", tls_c->state);
 		goto err;
 	}
+
 	ret = wolfSSL_accept(ssl);
 	tls_init_ssl_cache(tls_c);
 	if(unlikely(ret == 1)) {
@@ -574,6 +580,7 @@ int tls_connect(struct tcp_connection *c, int *error)
 		BUG("Invalid connection state %d (bug in TLS code)\n", tls_c->state);
 		goto err;
 	}
+
 	ret = wolfSSL_connect(ssl);
 	tls_init_ssl_cache(tls_c);
 	if(unlikely(ret == 1)) {
@@ -772,10 +779,10 @@ void tls_h_tcpconn_clean_f(struct tcp_connection *c)
 {
 	/* At shutdown in MT mode, PROC_TCP_MAIN is already dead and the OS
          * reclaims all memory. Avoid touching its heap entirely. */
-	if(_ksr_is_main && ksr_tcp_main_threads != 0)
+	if(_ksr_is_main)
 		return;
 
-	if(ksr_tcp_main_threads != 0 && !is_tcp_main() && !_ksr_is_main) {
+	if(!is_tcp_main() && !_ksr_is_main) {
 		int dsize = 0;
 		tcpx_task_t *ptask = NULL;
 		tcpx_task_result_t *rtask = NULL;
@@ -897,7 +904,7 @@ static char *get_tls_domain_str(
 	atomic_inc(&cfg->ref_count);
 	lock_release(tls_domains_cfg_lock);
 
-	if(c->flags & F_CONN_PASSIVE) {
+	if(c && (c->flags & F_CONN_PASSIVE)) {
 		dom = tls_lookup_cfg(cfg, TLS_DOMAIN_SRV, ip, port, 0, 0);
 	} else {
 		sname = tls_get_connect_server_name();
@@ -931,7 +938,7 @@ int tls_h_match_domain_f(
 		return 0;
 	}
 
-	dom_str = get_tls_domain_str(c, ip, port);
+	dom_str = get_tls_domain_str(NULL /* to use XAVPs only */, ip, port);
 	STR_SET(dom, dom_str);
 
 	return STR_EQ(tls_c->dom, dom);
@@ -1364,11 +1371,7 @@ int tls_h_encode_f(struct tcp_connection *c, const char **pbuf,
 		unsigned int *plen, const char **rest_buf, unsigned int *rest_len,
 		snd_flags_t *send_flags)
 {
-	if(ksr_tcp_main_threads == 0) {
-		return tls_h_encode_mp_f(c, pbuf, plen, rest_buf, rest_len, send_flags);
-	} else {
-		return tls_h_encode_mt_f(c, pbuf, plen, rest_buf, rest_len, send_flags);
-	}
+	return tls_h_encode_mt_f(c, pbuf, plen, rest_buf, rest_len, send_flags);
 }
 
 
@@ -1879,11 +1882,7 @@ int tls_h_read_mt_f(struct tcp_connection *c, rd_conn_flags_t *flags)
 
 int tls_h_read_f(struct tcp_connection *c, rd_conn_flags_t *flags)
 {
-	if(ksr_tcp_main_threads == 0) {
-		return tls_h_read_mp_f(c, flags);
-	} else {
-		return tls_h_read_mt_f(c, flags);
-	}
+	return tls_h_read_mt_f(c, flags);
 }
 
 static int _tls_evrt_connection_out = -1; /* default disabled */

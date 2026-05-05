@@ -61,6 +61,21 @@ int ht_dmq_send(str *body, dmq_node_t *node);
 int ht_dmq_send_sync(dmq_node_t *node, str *htname);
 int ht_dmq_handle_sync(srjson_doc_t *jdoc);
 
+static inline int ht_dmq_json_get_str(srjson_t *it, str *out, const char *fname)
+{
+	if(it == NULL || out == NULL) {
+		LM_ERR("invalid parameters for json string extraction\n");
+		return -1;
+	}
+	if(it->valuestring == NULL) {
+		LM_ERR("missing string value for json field [%s]\n", fname);
+		return -1;
+	}
+	out->s = it->valuestring;
+	out->len = strlen(out->s);
+	return 0;
+}
+
 static int ht_dmq_cell_group_init(void)
 {
 
@@ -305,6 +320,10 @@ int ht_dmq_handle_msg(
 			goto invalid;
 		}
 	}
+	if(jdoc.root->child == NULL || jdoc.root->child->string == NULL) {
+		LM_ERR("invalid json doc: missing root child\n");
+		goto invalid;
+	}
 
 	if(unlikely(strcmp(jdoc.root->child->string, "cells") == 0)) {
 		ht_dmq_handle_sync(&jdoc);
@@ -314,16 +333,16 @@ int ht_dmq_handle_msg(
 			if(strcmp(it->string, "action") == 0) {
 				action = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "htname") == 0) {
-				htname.s = it->valuestring;
-				htname.len = strlen(htname.s);
+				if(ht_dmq_json_get_str(it, &htname, "htname") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "cname") == 0) {
-				cname.s = it->valuestring;
-				cname.len = strlen(cname.s);
+				if(ht_dmq_json_get_str(it, &cname, "cname") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "type") == 0) {
 				type = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "strval") == 0) {
-				val.s.s = it->valuestring;
-				val.s.len = strlen(val.s.s);
+				if(ht_dmq_json_get_str(it, &val.s, "strval") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "intval") == 0) {
 				val.n = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "mode") == 0) {
@@ -458,7 +477,7 @@ int ht_dmq_replay_action(ht_dmq_action_t action, str *htname, str *cname,
 	}
 }
 
-int ht_dmq_request_sync(str *htname)
+int ht_dmq_request_sync(str *htname, dmq_node_t *dmq_node)
 {
 
 	srjson_doc_t jdoc;
@@ -484,7 +503,7 @@ int ht_dmq_request_sync(str *htname)
 	}
 	jdoc.buf.len = strlen(jdoc.buf.s);
 	LM_DBG("sending serialized data %.*s\n", jdoc.buf.len, jdoc.buf.s);
-	if(ht_dmq_send(&jdoc.buf, 0) != 0) {
+	if(ht_dmq_send(&jdoc.buf, dmq_node) != 0) {
 		goto error;
 	}
 
@@ -502,9 +521,9 @@ error:
 	return -1;
 }
 
-int ht_dmq_request_sync_all()
+int ht_dmq_request_sync_all(dmq_node_t *dmq_node)
 {
-	return ht_dmq_request_sync(NULL);
+	return ht_dmq_request_sync(NULL, dmq_node);
 }
 
 int ht_dmq_send_sync(dmq_node_t *node, str *htname)
@@ -605,16 +624,16 @@ int ht_dmq_handle_sync(srjson_doc_t *jdoc)
 	while(cell) {
 		for(it = cell->child; it; it = it->next) {
 			if(strcmp(it->string, "htname") == 0) {
-				htname.s = it->valuestring;
-				htname.len = strlen(htname.s);
+				if(ht_dmq_json_get_str(it, &htname, "htname") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "cname") == 0) {
-				cname.s = it->valuestring;
-				cname.len = strlen(cname.s);
+				if(ht_dmq_json_get_str(it, &cname, "cname") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "type") == 0) {
 				type = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "strval") == 0) {
-				val.s.s = it->valuestring;
-				val.s.len = strlen(val.s.s);
+				if(ht_dmq_json_get_str(it, &val.s, "strval") < 0)
+					goto invalid;
 			} else if(strcmp(it->string, "intval") == 0) {
 				val.n = SRJSON_GET_INT(it);
 			} else if(strcmp(it->string, "expire") == 0) {
@@ -642,4 +661,6 @@ int ht_dmq_handle_sync(srjson_doc_t *jdoc)
 		cell = cell->next;
 	}
 	return 0;
+invalid:
+	return -1;
 }

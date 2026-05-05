@@ -197,6 +197,8 @@ typedef enum send_flags
 	SND_F_FORCE_CON_REUSE = (1 << 0), /* reuse an existing connection or fail */
 	SND_F_CON_CLOSE = (1 << 1),		  /* close the connection after sending */
 	SND_F_FORCE_SOCKET = (1 << 2),	  /* send socket in dst is forced */
+	SND_F_FORCE_PROTO = (1 << 3),	  /* reuse connections of same proto */
+	SND_F_WSX_OUTBOUND = (1 << 4),	  /* allow no ws/wss open connection */
 } send_flags_t;
 
 typedef struct snd_flags
@@ -235,6 +237,13 @@ typedef struct receive_info
 	/* no need for dst_su yet */
 } receive_info_t;
 
+typedef struct ksr_sockaddr
+{
+	ip_addr_t ip;
+	unsigned short port;
+	char proto;
+	unsigned char vset; /* 1 if values are set */
+} ksr_sockaddr_t;
 
 typedef struct dest_info
 {
@@ -250,6 +259,7 @@ typedef struct dest_info
 	char proto_pad0;  /* padding field */
 	short proto_pad1; /* padding field */
 #endif
+	ksr_sockaddr_t ephemeral; /* local socket for outbound TCP/TLS */
 } dest_info_t;
 
 typedef struct sr_net_info
@@ -262,6 +272,7 @@ typedef struct sr_net_info
 } sr_net_info_t;
 
 sr_net_info_t *ksr_evrt_rcvnetinfo_get(void);
+void ksr_evrt_rcvnetinfo_set(sr_net_info_t *netinfo);
 
 #define SND_FLAGS_INIT(sflags)    \
 	do {                          \

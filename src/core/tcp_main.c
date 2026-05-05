@@ -1781,7 +1781,7 @@ struct tcp_connection *_tcpconn_find(int id, struct ip_addr *ip, int port,
 						a->parent->id);
 
 #ifdef USE_TLS
-				if(tls_connection_match_domain && proto == PROTO_TLS
+				if(tls_connection_match_domain && a->parent->type == PROTO_TLS
 						&& !tls_hook_call(match_domain, 1, a->parent, ip, port))
 					continue;
 #endif
@@ -2108,6 +2108,16 @@ static int tcpconn_do_send(int fd, struct tcp_connection *c, const char *buf,
 static int tcpconn_1st_send(int fd, struct tcp_connection *c, const char *buf,
 		unsigned len, snd_flags_t send_flags, long *resp, int locked);
 
+#define tcp_dst_ephemeral_set(n, c, dst)           \
+	do {                                           \
+		if(n >= 0) {                               \
+			dst->ephemeral.ip = c->rcv.dst_ip;     \
+			dst->ephemeral.port = c->rcv.dst_port; \
+			dst->ephemeral.proto = c->rcv.proto;   \
+			dst->ephemeral.vset = 1;               \
+		}                                          \
+	} while(0)
+
 /* finds a tcpconn & sends on it
  * uses the dst members to, proto (TCP|TLS) and id and tries to send
  *  from the "from" address (if non null and id==0)
@@ -2121,7 +2131,7 @@ int tcp_send(struct dest_info *dst, union sockaddr_union *from, const char *buf,
 	int port;
 	int fd = -1;
 	long response[2];
-	int n;
+	int n = -1;
 	ticks_t con_lifetime;
 	int try_local_port;
 #ifdef USE_TLS
@@ -2137,12 +2147,14 @@ int tcp_send(struct dest_info *dst, union sockaddr_union *from, const char *buf,
 		return -1;
 	}
 
+	dst->ephemeral.vset = 0;
 	port = su_getport(&dst->to);
 	try_local_port = (dst->send_sock) ? dst->send_sock->port_no : 0;
 	con_lifetime = cfg_get(tcp, tcp_cfg, con_lifetime);
 	if(likely(port)) {
 		su2ip_addr(&ip, &dst->to);
-		if(tcp_connection_match == TCPCONN_MATCH_STRICT) {
+		if(tcp_connection_match == TCPCONN_MATCH_STRICT
+				|| (dst->send_flags.f & SND_F_FORCE_PROTO)) {
 			c = tcpconn_lookup(dst->id, &ip, port, from, try_local_port,
 					con_lifetime, dst->proto);
 		} else {
@@ -2159,7 +2171,8 @@ int tcp_send(struct dest_info *dst, union sockaddr_union *from, const char *buf,
 		if(unlikely(c == 0)) {
 			if(likely(port)) {
 				/* try again w/o id */
-				if(tcp_connection_match == TCPCONN_MATCH_STRICT) {
+				if(tcp_connection_match == TCPCONN_MATCH_STRICT
+						|| (dst->send_flags.f & SND_F_FORCE_PROTO)) {
 					c = tcpconn_lookup(0, &ip, port, from, try_local_port,
 							con_lifetime, dst->proto);
 				} else {
@@ -2514,22 +2527,26 @@ int tcp_send(struct dest_info *dst, union sockaddr_union *from, const char *buf,
 	 * (CONN_EOF, CON_ERROR, CON_QUEUED_WRITE are all treated above) */
 		goto release_c;
 	} /* if (c==0 or unusable) new connection */
+	tcp_dst_ephemeral_set(n, c, dst);
 	/* existing connection, send on it */
 	n = tcpconn_send_put(c, buf, len, dst->send_flags);
 	/* no deref needed (automatically done inside tcpconn_send_put() */
 	return n;
 #ifdef TCP_CONNECT_WAIT
 conn_wait_success:
+	tcp_dst_ephemeral_set(n, c, dst);
 #ifdef TCP_FD_CACHE
 	if(cfg_get(tcp, tcp_cfg, fd_cache)) {
 		tcp_fd_cache_add(c, fd);
 	} else
 #endif /* TCP_FD_CACHE */
-		if(unlikely(tcp_safe_close(fd) < 0))
+		if(unlikely(tcp_safe_close(fd) < 0)) {
 			LM_ERR("closing temporary send fd for %p: %s: "
 				   "close(%d) failed (flags 0x%x): %s (%d)\n",
 					c, su2a(&c->rcv.src_su, sizeof(c->rcv.src_su)), fd,
 					c->flags, strerror(errno), errno);
+		}
+
 	tcpconn_chld_put(c); /* release c (dec refcnt & free on 0) */
 	return n;
 conn_wait_error:
@@ -2564,6 +2581,7 @@ conn_wait_close:
 	return n;
 #endif /* TCP_CONNECT_WAIT */
 release_c:
+	tcp_dst_ephemeral_set(n, c, dst);
 	tcpconn_chld_put(c); /* release c (dec refcnt & free on 0) */
 end_no_deref:
 end_no_conn:

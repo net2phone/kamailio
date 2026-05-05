@@ -26,6 +26,8 @@
  *
  */
 
+#include <strings.h>
+
 #include "../../core/locking.h"
 #include "../../core/str.h"
 #include "../../core/ut.h"
@@ -72,11 +74,67 @@ char *wsconn_state_str[] = {
 		"CONNECTING", /* WS_S_CONNECTING */
 		"OPEN",		  /* WS_S_OPEN */
 		"CLOSING",	  /* WS_S_CLOSING */
+		"REMOVING",	  /* WS_S_REMOVING */
 		"CLOSED"	  /* WS_S_CLOSED */
 };
 
 /* RPC command status text */
 static str str_status_bad_param = str_init("Bad display order parameter");
+
+#define WS_SENDQ_MAX_ITEMS 32
+#define WS_SENDQ_MAX_BYTES (1024 * 1024)
+
+static void wsconn_free_storage(ws_connection_t *wsc)
+{
+	ws_send_item_t *item;
+	ws_send_item_t *next;
+
+	if(wsc == NULL)
+		return;
+
+	if(wsc->target_host.s != NULL) {
+		shm_free(wsc->target_host.s);
+		wsc->target_host.s = NULL;
+		wsc->target_host.len = 0;
+	}
+
+	if(wsc->target_path.s != NULL) {
+		shm_free(wsc->target_path.s);
+		wsc->target_path.s = NULL;
+		wsc->target_path.len = 0;
+	}
+
+	item = wsc->sendq_head;
+	while(item != NULL) {
+		next = item->next;
+		shm_free(item);
+		item = next;
+	}
+	wsc->sendq_head = NULL;
+	wsc->sendq_tail = NULL;
+}
+
+void wsconn_sendq_free_list(ws_send_item_t *head)
+{
+	ws_send_item_t *next;
+
+	while(head != NULL) {
+		next = head->next;
+		shm_free(head);
+		head = next;
+	}
+}
+
+static int wsconn_str_eq(const str *v1, const str *v2)
+{
+	if(v1 == NULL || v2 == NULL)
+		return 0;
+	if(v1->len != v2->len)
+		return 0;
+	if(v1->len == 0)
+		return 1;
+	return (strncasecmp(v1->s, v2->s, v1->len) == 0) ? 1 : 0;
+}
 
 int wsconn_init(void)
 {
@@ -140,13 +198,51 @@ static inline void _wsconn_rm(ws_connection_t *wsc)
 {
 	wsconn_listrm(wsconn_id_hash[wsc->id_hash], wsc, id_next, id_prev);
 
-	update_stat(ws_current_connections, -1);
-	if(wsc->sub_protocol == SUB_PROTOCOL_SIP)
-		update_stat(ws_sip_current_connections, -1);
-	else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP)
-		update_stat(ws_msrp_current_connections, -1);
+	if(wsc->stats_enabled) {
+		update_stat(ws_current_connections, -1);
+		if(wsc->sub_protocol == SUB_PROTOCOL_SIP)
+			update_stat(ws_sip_current_connections, -1);
+		else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP)
+			update_stat(ws_msrp_current_connections, -1);
+	}
 
+	wsconn_free_storage(wsc);
 	shm_free(wsc);
+}
+
+static void wsconn_open_set_stats(ws_connection_t *wsc)
+{
+	int cur_cons, max_cons;
+
+	if(wsc->stats_enabled)
+		return;
+
+	lock_get(wsstat_lock);
+
+	update_stat(ws_current_connections, 1);
+	cur_cons = get_stat_val(ws_current_connections);
+	max_cons = get_stat_val(ws_max_concurrent_connections);
+	if(max_cons < cur_cons)
+		update_stat(ws_max_concurrent_connections, cur_cons - max_cons);
+
+	if(wsc->sub_protocol == SUB_PROTOCOL_SIP) {
+		update_stat(ws_sip_current_connections, 1);
+		cur_cons = get_stat_val(ws_sip_current_connections);
+		max_cons = get_stat_val(ws_sip_max_concurrent_connections);
+		if(max_cons < cur_cons)
+			update_stat(ws_sip_max_concurrent_connections, cur_cons - max_cons);
+	} else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP) {
+		update_stat(ws_msrp_current_connections, 1);
+		cur_cons = get_stat_val(ws_msrp_current_connections);
+		max_cons = get_stat_val(ws_msrp_max_concurrent_connections);
+		if(max_cons < cur_cons)
+			update_stat(
+					ws_msrp_max_concurrent_connections, cur_cons - max_cons);
+	}
+
+	wsc->stats_enabled = 1;
+
+	lock_release(wsstat_lock);
 }
 
 void wsconn_destroy(void)
@@ -188,9 +284,9 @@ void wsconn_destroy(void)
 	}
 }
 
-int wsconn_add(struct receive_info *rcv, unsigned int sub_protocol)
+static int wsconn_add_mode(struct receive_info *rcv, unsigned int sub_protocol,
+		ws_conn_role_t role, ws_conn_state_t state, str *handshake_key)
 {
-	int cur_cons, max_cons;
 	int id = rcv->proto_reserved1;
 	int id_hash = tcp_id_hash(id);
 	ws_connection_t *wsc;
@@ -206,12 +302,22 @@ int wsconn_add(struct receive_info *rcv, unsigned int sub_protocol)
 	memset(wsc, 0, sizeof(ws_connection_t) + BUF_SIZE + 1);
 	wsc->id = id;
 	wsc->id_hash = id_hash;
-	wsc->state = WS_S_OPEN;
+	wsc->state = state;
+	wsc->role = role;
 	wsc->rcv = *rcv;
 	wsc->sub_protocol = sub_protocol;
 	wsc->run_event = 0;
 	wsc->frag_buf.s = ((char *)wsc) + sizeof(ws_connection_t);
 	atomic_set(&wsc->refcnt, 0);
+	if(handshake_key && handshake_key->s && handshake_key->len > 0) {
+		if(handshake_key->len >= (int)sizeof(wsc->handshake_key)) {
+			LM_ERR("handshake key too long\n");
+			shm_free(wsc);
+			return -1;
+		}
+		memcpy(wsc->handshake_key, handshake_key->s, handshake_key->len);
+		wsc->handshake_key_len = handshake_key->len;
+	}
 
 	LM_DBG("new wsc => [%p], ref => [%d]\n", wsc, atomic_get(&wsc->refcnt));
 
@@ -235,32 +341,162 @@ int wsconn_add(struct receive_info *rcv, unsigned int sub_protocol)
 	LM_DBG("added to conn_table wsc => [%p], ref => [%d]\n", wsc,
 			atomic_get(&wsc->refcnt));
 
-	/* Update connection statistics */
-	lock_get(wsstat_lock);
+	if(state == WS_S_OPEN)
+		wsconn_open_set_stats(wsc);
 
-	update_stat(ws_current_connections, 1);
-	cur_cons = get_stat_val(ws_current_connections);
-	max_cons = get_stat_val(ws_max_concurrent_connections);
-	if(max_cons < cur_cons)
-		update_stat(ws_max_concurrent_connections, cur_cons - max_cons);
+	return 0;
+}
 
-	if(wsc->sub_protocol == SUB_PROTOCOL_SIP) {
-		update_stat(ws_sip_current_connections, 1);
-		cur_cons = get_stat_val(ws_sip_current_connections);
-		max_cons = get_stat_val(ws_sip_max_concurrent_connections);
-		if(max_cons < cur_cons)
-			update_stat(ws_sip_max_concurrent_connections, cur_cons - max_cons);
-	} else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP) {
-		update_stat(ws_msrp_current_connections, 1);
-		cur_cons = get_stat_val(ws_msrp_current_connections);
-		max_cons = get_stat_val(ws_msrp_max_concurrent_connections);
-		if(max_cons < cur_cons)
-			update_stat(
-					ws_msrp_max_concurrent_connections, cur_cons - max_cons);
+int wsconn_add(struct receive_info *rcv, unsigned int sub_protocol)
+{
+	return wsconn_add_mode(rcv, sub_protocol, WS_ROLE_SERVER, WS_S_OPEN, NULL);
+}
+
+int wsconn_add_outgoing(struct receive_info *rcv, unsigned int sub_protocol,
+		str *handshake_key, str *host, int port, str *path, int proto)
+{
+	ws_connection_t *wsc;
+
+	if(wsconn_add_mode(rcv, sub_protocol, WS_ROLE_CLIENT, WS_S_CONNECTING,
+			   handshake_key)
+			< 0)
+		return -1;
+
+	wsc = wsconn_get(rcv->proto_reserved1);
+	if(wsc == NULL) {
+		LM_ERR("failed to retrieve outgoing websocket connection\n");
+		return -1;
 	}
 
-	lock_release(wsstat_lock);
+	if(host != NULL && host->s != NULL && host->len > 0) {
+		if(shm_str_dup(&wsc->target_host, host) < 0) {
+			LM_ERR("allocating outgoing websocket host metadata\n");
+			wsconn_rm(wsc, WSCONN_EVENTROUTE_NO);
+			wsconn_put(wsc);
+			return -1;
+		}
+	}
 
+	if(path != NULL && path->s != NULL && path->len > 0) {
+		if(shm_str_dup(&wsc->target_path, path) < 0) {
+			LM_ERR("allocating outgoing websocket path metadata\n");
+			wsconn_rm(wsc, WSCONN_EVENTROUTE_NO);
+			wsconn_put(wsc);
+			return -1;
+		}
+	}
+
+	wsc->target_port = port;
+	wsc->target_proto = proto;
+	wsconn_put(wsc);
+
+	return 0;
+}
+
+ws_connection_t *wsconn_get_outgoing(
+		str *host, int port, str *path, int proto, unsigned int sub_protocol)
+{
+	int h;
+	ws_connection_t *wsc;
+
+	WSCONN_LOCK;
+	for(h = 0; h < TCP_ID_HASH_SIZE; h++) {
+		for(wsc = wsconn_id_hash[h]; wsc != NULL; wsc = wsc->id_next) {
+			if(wsc->role != WS_ROLE_CLIENT)
+				continue;
+			if(wsc->state != WS_S_OPEN && wsc->state != WS_S_CONNECTING)
+				continue;
+			if(wsc->sub_protocol != sub_protocol)
+				continue;
+			if(wsc->target_port != port || wsc->target_proto != proto)
+				continue;
+			if(wsconn_str_eq(&wsc->target_host, host) == 0)
+				continue;
+			if(wsconn_str_eq(&wsc->target_path, path) == 0)
+				continue;
+			wsconn_ref(wsc);
+			WSCONN_UNLOCK;
+			return wsc;
+		}
+	}
+	WSCONN_UNLOCK;
+	return NULL;
+}
+
+int wsconn_sendq_push(ws_connection_t *wsc, const char *buf, unsigned int len)
+{
+	ws_send_item_t *item;
+	ws_send_item_t *it;
+	unsigned int qitems = 0;
+	unsigned int qbytes = 0;
+
+	if(wsc == NULL || buf == NULL || len == 0)
+		return -1;
+
+	item = shm_malloc(sizeof(ws_send_item_t) + len);
+	if(item == NULL) {
+		SHM_MEM_ERROR;
+		return -1;
+	}
+	memset(item, 0, sizeof(ws_send_item_t));
+	item->len = len;
+	memcpy(item->data, buf, len);
+
+	WSCONN_LOCK;
+	if(wsc->state != WS_S_CONNECTING) {
+		WSCONN_UNLOCK;
+		shm_free(item);
+		return 1;
+	}
+
+	for(it = wsc->sendq_head; it != NULL; it = it->next) {
+		qitems++;
+		qbytes += it->len;
+	}
+	if(qitems >= WS_SENDQ_MAX_ITEMS || qbytes + len > WS_SENDQ_MAX_BYTES) {
+		WSCONN_UNLOCK;
+		LM_ERR("websocket send queue exceeded for connection %d\n", wsc->id);
+		shm_free(item);
+		return -1;
+	}
+
+	if(wsc->sendq_tail == NULL) {
+		wsc->sendq_head = wsc->sendq_tail = item;
+	} else {
+		wsc->sendq_tail->next = item;
+		wsc->sendq_tail = item;
+	}
+	WSCONN_UNLOCK;
+	return 0;
+}
+
+ws_send_item_t *wsconn_sendq_detach(ws_connection_t *wsc)
+{
+	ws_send_item_t *head;
+
+	if(wsc == NULL)
+		return NULL;
+
+	WSCONN_LOCK;
+	head = wsc->sendq_head;
+	wsc->sendq_head = NULL;
+	wsc->sendq_tail = NULL;
+	WSCONN_UNLOCK;
+
+	return head;
+}
+
+int wsconn_mark_open(ws_connection_t *wsc)
+{
+	if(!wsc)
+		return -1;
+
+	WSCONN_LOCK;
+	if(wsc->state != WS_S_REMOVING)
+		wsc->state = WS_S_OPEN;
+	WSCONN_UNLOCK;
+
+	wsconn_open_set_stats(wsc);
 	return 0;
 }
 
@@ -337,6 +573,7 @@ static void wsconn_dtor(ws_connection_t *wsc)
 
 	wsconn_run_close_callback(wsc);
 
+	wsconn_free_storage(wsc);
 	shm_free(wsc);
 
 	LM_DBG("wsconn id: %d / %u [%p] destroyed\n", wsc->id, wsc->id_hash, wsc);
@@ -415,11 +652,13 @@ void wsconn_detach_connection(ws_connection_t *wsc)
 	wsconn_listrm(wsconn_id_hash[wsc->id_hash], wsc, id_next, id_prev);
 
 	/* stat */
-	update_stat(ws_current_connections, -1);
-	if(wsc->sub_protocol == SUB_PROTOCOL_SIP)
-		update_stat(ws_sip_current_connections, -1);
-	else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP)
-		update_stat(ws_msrp_current_connections, -1);
+	if(wsc->stats_enabled) {
+		update_stat(ws_current_connections, -1);
+		if(wsc->sub_protocol == SUB_PROTOCOL_SIP)
+			update_stat(ws_sip_current_connections, -1);
+		else if(wsc->sub_protocol == SUB_PROTOCOL_MSRP)
+			update_stat(ws_msrp_current_connections, -1);
+	}
 }
 
 /* mode controls if lock needs to be aquired */
@@ -736,11 +975,25 @@ static int ws_rpc_add_node(
 	char rplbuf[512];
 
 	if(con) {
-		src_proto = (con->rcv.proto == PROTO_WS) ? "ws" : "wss";
+		if(con->rcv.proto == PROTO_WS)
+			src_proto = "ws";
+		else if(con->rcv.proto == PROTO_WSS)
+			src_proto = "wss";
+		else if(con->rcv.proto == PROTO_TLS)
+			src_proto = "tls";
+		else
+			src_proto = "tcp";
 		memset(src_ip, 0, IP6_MAX_STR_SIZE + 1);
 		ip_addr2sbuf(&con->rcv.src_ip, src_ip, IP6_MAX_STR_SIZE);
 
-		dst_proto = (con->rcv.proto == PROTO_WS) ? "ws" : "wss";
+		if(con->rcv.proto == PROTO_WS)
+			dst_proto = "ws";
+		else if(con->rcv.proto == PROTO_WSS)
+			dst_proto = "wss";
+		else if(con->rcv.proto == PROTO_TLS)
+			dst_proto = "tls";
+		else
+			dst_proto = "tcp";
 		memset(dst_ip, 0, IP6_MAX_STR_SIZE + 1);
 		ip_addr2sbuf(&con->rcv.dst_ip, dst_ip, IP6_MAX_STR_SIZE);
 

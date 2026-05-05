@@ -107,7 +107,7 @@ INSTALL_FLAVOUR=$(FLAVOUR)
 VERSION = 6
 PATCHLEVEL = 2
 SUBLEVEL =  0
-EXTRAVERSION = -dev0
+EXTRAVERSION = -dev1
 
 # memory manager switcher
 # 0 - f_malloc (fast malloc)
@@ -311,8 +311,8 @@ ifneq (,$(findstring gcc, $(CC_LONGVER)))
 					-e 's/^8\.[0-9]$$/8.0+/' \
 					-e 's/^9\.[0-9]\..*/9.0+/' \
 					-e 's/^9\.[0-9]$$/9.0+/' \
-					-e 's/^1[0-5]\.[0-9]\..*/9.0+/' \
-					-e 's/^1[0-5]\.[0-9]$$/9.0+/')
+					-e 's/^1[0-6]\.[0-9]\..*/9.0+/' \
+					-e 's/^1[0-6]\.[0-9]$$/9.0+/')
 ifeq (,$(strip $(filter-out 3.0 3.4 4.x 4.2+ 4.5+ 5.0+ 6.0+ 7.0+ 8.0+ 9.0+,$(CC_SHORTVER))))
 	# dependencies can be generated on-the-fly while compiling *.c
 	CC_MKDEP_OPTS=-MMD -MP
@@ -764,6 +764,10 @@ C_DEFS+= -DTLSF_MALLOC
 
 ifeq ($(MEMDBG), 1)
 	C_DEFS+= -DDBG_SR_MEMORY
+
+ifeq ($(MEMDBG_BACKTRACE), 1)
+	C_DEFS+= -DDBG_SR_MEMORY_BACKTRACE
+endif
 
 ifeq ($(MEMPKG), sys)
 ifeq ($(MEMDBGSYS), 1)

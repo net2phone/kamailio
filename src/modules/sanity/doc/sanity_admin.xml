@@ -31,72 +31,72 @@
 		<itemizedlist>
 		<listitem>
 			<para>
-			ruri sip version - (1) - checks if the SIP version in the request
+			ruri sip version - (1 [0x01 / 2^0]) - checks if the SIP version in the request
 			URI is supported, currently only 2.0.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			ruri scheme - (2) - checks if the URI scheme of the request URI is
+			ruri scheme - (2 [0x02 / 2^1]) - checks if the URI scheme of the request URI is
 			supported (sip[s]|tel[s]) by &kamailio;
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			required headers - (4) -checks if the minimum set of required headers
+			required headers - (4 [0x04 / 2^2]) -checks if the minimum set of required headers
 			To, From, CSeq, Call-ID and Via is present in the request.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			via sip version - (8) - disabled.
+			via sip version - (8 [0x08 / 2^3]) - disabled.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			via protocol - (16) - disabled.
+			via protocol - (16 [0x10 / 2^4]) - disabled.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			Cseq method - (32) - checks if the method from the CSeq header is equal
+			Cseq method - (32 [0x20 / 2^5]) - checks if the method from the CSeq header is equal
 			to the request method.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			Cseq value - (64) - checks if the number in the CSeq header is a valid
+			Cseq value - (64 [0x40 / 2^6]) - checks if the number in the CSeq header is a valid
 			unsigned integer.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			content length - (128) - checks if the size of the body matches with the
+			content length - (128 [0x80 / 2^7]) - checks if the size of the body matches with the
 			value from the Content-Length header.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			expires value - (256) - checks if the value of the Expires header is a
+			expires value - (256 [0x100 / 2^8]) - checks if the value of the Expires header is a
 			valid unsigned integer.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			proxy require - (512) - checks if all items of the Proxy-Require header
+			proxy require - (512 [0x200 / 2^9]) - checks if all items of the Proxy-Require header
 			are present in the list of the extensions from the module
 			parameter proxy_require.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			parse uri's - (1024) - checks if the specified URIs are present and
+			parse uri's - (1024 [0x400 / 2^10]) - checks if the specified URIs are present and
 			parseable by the &kamailio; parsers
 			</para>
 		</listitem>
 		<listitem>
 		        <para>
-			digest credentials (2048) - Check all instances of digest credentials in a
+			digest credentials (2048 [0x800 / 2^11]) - Check all instances of digest credentials in a
 			message. The test checks whether there are all required
 			digest parameters and that they have meaningful values.
 			<emphasis>NOTE:</emphasis> the message will be considered invalid
@@ -105,21 +105,34 @@
 		</listitem>
 		<listitem>
 			<para>
-			duplicated To/From tags (4096) - checks for the presence of duplicated
+			duplicated To/From tags (4096 [0x1000 / 2^12]) - checks for the presence of duplicated
 			tags in To/From headers.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			Authorization header (8192) - checks if the Authorization header is valid
+			Authorization header (8192 [0x2000 / 2^13]) - checks if the Authorization header is valid
 			if the scheme is "digest" (see "digest credentials" above), always
 			returns success for other schemes.
 			</para>
 		</listitem>
 		<listitem>
 			<para>
-			first via header (16384) - checks if the first Via header is
-			available, can be parsed and has an address value.
+			first Via header (16384 [0x4000 / 2^14]) - checks if the first Via header is
+			available, can be parsed, has an address value, and the branch parameter is present.
+			</para>
+		</listitem>
+		<listitem>
+			<para>
+			RFC3261 compliance related checks (32768 [0x8000 / 2^15]) - checks if
+			the branch parameter of the first Via header starts with magic cookie: 'z9hG4bK'.
+			Also checks that the lr parameter is present in Record-Route headers if they are present.
+			</para>
+		</listitem>
+		<listitem>
+			<para>
+			size checks (65536 [0x10000 / 2^16]) - do the size checks for SIP message
+			attributes (alternative to size_checks module parameter).
 			</para>
 		</listitem>
 		</itemizedlist>
@@ -248,6 +261,233 @@ modparam("sanity", "autodrop", 1)
 	    <programlisting>
 ...
 modparam("sanity", "noreply", 1)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_checks">
+	<title><varname>size_checks</varname> (int)</title>
+	<para>
+		If set to 1, then the module performs the size checks for various
+		SIP message attributes when using sanity_check() function. The size of
+		each attribute can be set by a dedicated parameter, see the next sections.
+		If the size is greater than the corresponding parameter value, then
+		the sanity check failed.
+	</para>
+	<para>
+		This enables the size checks globally, for all uses of sanity_check()
+		function. To enable it per function call, set the corresponding flag
+		in the sanity_check() parameter.
+	</para>
+	<para>
+		Default value: 0.
+	</para>
+	<example>
+	    <title>Set <varname>size_checks</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_checks", 1)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_message">
+	<title><varname>size_message</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message to do sanity check with. If set to
+		0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 16384.
+	</para>
+	<example>
+	    <title>Set <varname>size_message</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_message", 8192)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_headers">
+	<title><varname>size_headers</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message headers (all together) to do sanity
+		check with. If set to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 8192.
+	</para>
+	<example>
+	    <title>Set <varname>size_headers</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_headers", 4096)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_body">
+	<title><varname>size_body</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message body to do sanity check with. If set
+		to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 8192.
+	</para>
+	<example>
+	    <title>Set <varname>size_body</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_body", 4096)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_header">
+	<title><varname>size_header</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message header to do sanity check with. The
+		check is done for each header, including its name and value. If set
+		to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 2048.
+	</para>
+	<example>
+	    <title>Set <varname>size_header</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_header", 1024)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_method">
+	<title><varname>size_method</varname> (int)</title>
+	<para>
+		Specify the size of the SIP method to do sanity check with (taken from
+		first line for SIP request and from CSeq for SIP reply). If set
+		to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 32.
+	</para>
+	<example>
+	    <title>Set <varname>size_method</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_method", 16)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_ruri">
+	<title><varname>size_ruri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP request URI to do sanity check with. If set
+		to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_ruri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_ruri", 512)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_from_uri">
+	<title><varname>size_from_uri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message From-URI to do sanity check with.
+		If set to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_from_uri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_from_uri", 512)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_to_uri">
+	<title><varname>size_to_uri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message To-URI to do sanity check with.
+		If set to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_to_uri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_to_uri", 512)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_contact_uri">
+	<title><varname>size_contact_uri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message Contact-URI to do sanity check with.
+		If set to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_contact_uri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_contact_uri", 512)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_route_uri">
+	<title><varname>size_route_uri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message Route-URI and Record-Route-URI to
+		do sanity check with. If set to 0, this size sanity check is not
+		performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_route_uri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_route_uri", 512)
+...
+	    </programlisting>
+	</example>
+	</section>
+	<section id="sanity.p.size_path_uri">
+	<title><varname>size_path_uri</varname> (int)</title>
+	<para>
+		Specify the size of the SIP message Path-URI to do sanity check with.
+		If set to 0, this size sanity check is not performed.
+	</para>
+	<para>
+		Default value: 256.
+	</para>
+	<example>
+	    <title>Set <varname>size_path_uri</varname> parameter</title>
+	    <programlisting>
+...
+modparam("sanity", "size_path_uri", 512)
 ...
 	    </programlisting>
 	</example>

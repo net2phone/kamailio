@@ -97,6 +97,15 @@ static cmd_export_t cmds[] = {
 	{ "ws_handle_handshake", (cmd_function)w_ws_handle_handshake,
 	  0, 0, 0,
 	  ANY_ROUTE },
+	{ "ws_connect", (cmd_function)w_ws_connect,
+	  5, fixup_sissi, fixup_free_sissi,
+	  ANY_ROUTE },
+	{ "ws_send", (cmd_function)w_ws_send,
+	  5, fixup_sissi, fixup_free_sissi,
+	  ANY_ROUTE },
+	{ "ws_connect_url", (cmd_function)w_ws_connect_url,
+	  2, fixup_spve_spve, fixup_free_spve_spve,
+	  ANY_ROUTE },
 
 	{ 0, 0, 0, 0, 0, 0 }
 };
@@ -193,6 +202,12 @@ static int mod_init(void)
 
 	if(sr_event_register_cb(SREV_TCP_WS_FRAME_OUT, ws_frame_transmit) != 0) {
 		LM_ERR("registering WebSocket transmit call-back\n");
+		goto error;
+	}
+
+	if(sr_event_register_cb(SREV_TCP_WS_HANDSHAKE, ws_handle_handshake_response)
+			!= 0) {
+		LM_ERR("registering WebSocket handshake call-back\n");
 		goto error;
 	}
 
@@ -379,6 +394,11 @@ static const char* ws_rpc_disable_doc[2] = {
 	0
 };
 
+static const char* ws_rpc_connect_doc[2] = {
+	"Initiate an outbound websocket connection: host port path subprotocol tls(0|1)",
+	0
+};
+
 rpc_export_t ws_rpc_cmds[] = {
 	{"ws.dump", ws_rpc_dump, ws_rpc_dump_doc, 0},
 	{"ws.close", ws_rpc_close, ws_rpc_close_doc, 0},
@@ -386,6 +406,7 @@ rpc_export_t ws_rpc_cmds[] = {
 	{"ws.pong", ws_rpc_pong, ws_rpc_pong_doc, 0},
 	{"ws.enable", ws_rpc_enable, ws_rpc_enable_doc, 0},
 	{"ws.disable", ws_rpc_disable, ws_rpc_disable_doc, 0},
+	{"ws.connect", ws_rpc_connect, ws_rpc_connect_doc, 0},
 	{0, 0, 0, 0}
 };
 /* clang-format on */
@@ -426,6 +447,16 @@ static sr_kemi_t sr_kemi_websocket_exports[] = {
 		SR_KEMIP_INT, ws_close3,
 		{ SR_KEMIP_INT, SR_KEMIP_STR, SR_KEMIP_INT,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
+	},
+	{ str_init("websocket"), str_init("connect"),
+		SR_KEMIP_INT, ws_connect,
+		{ SR_KEMIP_STR, SR_KEMIP_INT, SR_KEMIP_STR,
+			SR_KEMIP_STR, SR_KEMIP_INT, SR_KEMIP_NONE }
+	},
+	{ str_init("websocket"), str_init("send"),
+		SR_KEMIP_INT, ws_send,
+		{ SR_KEMIP_STR, SR_KEMIP_INT, SR_KEMIP_STR,
+			SR_KEMIP_STR, SR_KEMIP_INT, SR_KEMIP_NONE }
 	},
 
 	{ {0, 0}, {0, 0}, 0, NULL, { 0, 0, 0, 0, 0, 0 } }

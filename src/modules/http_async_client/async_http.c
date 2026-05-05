@@ -58,6 +58,7 @@ extern struct tm_binds tmb;
 
 struct sip_msg *ah_reply = NULL;
 str ah_error = {NULL, 0};
+str ah_xdata = {NULL, 0};
 http_m_time_t ah_time = {0};
 
 async_http_worker_t *workers = NULL;
@@ -149,6 +150,8 @@ void async_http_cb(struct http_m_reply *reply, void *param)
 	/* clean process-local result variables */
 	ah_error.s = NULL;
 	ah_error.len = 0;
+	ah_xdata.s = NULL;
+	ah_xdata.len = 0;
 
 	memset(&ah_time, 0, sizeof(struct http_m_time));
 	memset(ah_reply, 0, sizeof(struct sip_msg));
@@ -228,6 +231,7 @@ void async_http_cb(struct http_m_reply *reply, void *param)
 	strncpy(q_id, aq->id, strlen(aq->id));
 
 	q_id[strlen(aq->id)] = '\0';
+	ah_xdata = aq->xdata;
 
 	cfg_update();
 
@@ -276,6 +280,8 @@ void async_http_cb(struct http_m_reply *reply, void *param)
 	}
 
 done:
+	ah_xdata.s = NULL;
+	ah_xdata.len = 0;
 	free_sip_msg(ah_reply);
 	free_async_query(aq);
 
@@ -448,7 +454,14 @@ int init_socket(async_http_worker_t *worker)
 	return (0);
 }
 
-int async_send_query(sip_msg_t *msg, str *query, str *cbname)
+int async_send_query(
+		sip_msg_t *msg, str *query, str *cbname, ah_suspend_mode_t smode)
+{
+	return async_send_query_xdata(msg, query, cbname, smode, NULL);
+}
+
+int async_send_query_xdata(sip_msg_t *msg, str *query, str *cbname,
+		ah_suspend_mode_t smode, str *xdata)
 {
 	async_query_t *aq;
 	unsigned int tindex = 0;
@@ -472,7 +485,9 @@ int async_send_query(sip_msg_t *msg, str *query, str *cbname)
 	if(t == NULL || t == T_UNDEFINED) {
 		LM_DBG("no pre-existing transaction, switching to transaction-less "
 			   "behavior\n");
-	} else if(!ah_params.suspend_transaction) {
+	} else if(smode == AH_SUSPEND_NONE) {
+		LM_DBG("transaction won't be suspended (forced no-suspend mode)\n");
+	} else if(smode == AH_SUSPEND_CFG && !ah_params.suspend_transaction) {
 		LM_DBG("transaction won't be suspended\n");
 	} else {
 		if(tmb.t_suspend == NULL) {
@@ -500,6 +515,12 @@ int async_send_query(sip_msg_t *msg, str *query, str *cbname)
 
 	if(shm_str_dup(&aq->query, query) < 0) {
 		goto error;
+	}
+	if(xdata != NULL && xdata->s != NULL && xdata->len > 0) {
+		if(shm_str_dup(&aq->xdata, xdata) < 0) {
+			LM_ERR("Error allocating aq->xdata\n");
+			goto error;
+		}
 	}
 
 	memcpy(aq->cbname, cbname->s, cbname->len);
