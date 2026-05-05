@@ -234,7 +234,7 @@ int rtpengine_dmq_handle_msg(
 				goto error;
 			break;
 		case RTPENGINE_DMQ_SYNC:
-			if(rtpengine_dmq_replicate_sync() != 0) {
+			if(rtpengine_dmq_replicate_sync(node) != 0) {
 				goto error;
 			}
 			break;
@@ -317,7 +317,7 @@ int rtpengine_dmq_replicate_action(rtpengine_dmq_action_t action, str callid,
 	if(jdoc.buf.s != NULL) {
 		jdoc.buf.len = strlen(jdoc.buf.s);
 		LM_DBG("sending serialized data %.*s\n", jdoc.buf.len, jdoc.buf.s);
-		if(rtpengine_dmq_send(&jdoc.buf, 0) != 0) {
+		if(rtpengine_dmq_send(&jdoc.buf, node) != 0) {
 			goto error;
 		}
 		jdoc.free_fn(jdoc.buf.s);
@@ -352,7 +352,7 @@ int rtpengine_dmq_replicate_remove(str callid, str viabranch)
 			RTPENGINE_DMQ_REMOVE, callid, viabranch, NULL, NULL);
 }
 
-int rtpengine_dmq_replicate_sync()
+int rtpengine_dmq_replicate_sync(dmq_node_t *node)
 {
 	int i;
 	struct rtpengine_hash_entry *entry;
@@ -381,8 +381,8 @@ int rtpengine_dmq_replicate_sync()
 						entry->callid.len, entry->callid.s,
 						entry->viabranch.len, entry->viabranch.s);
 
-				if(rtpengine_dmq_replicate_insert(
-						   entry->callid, entry->viabranch, entry)
+				if(rtpengine_dmq_replicate_action(RTPENGINE_DMQ_INSERT,
+						   entry->callid, entry->viabranch, entry, node)
 						!= 0) {
 					LM_ERR("failed to replicate hash entry callid=%.*s "
 						   "viabranch=%.*s\n",
