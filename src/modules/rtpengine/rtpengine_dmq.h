@@ -48,5 +48,5 @@ int rtpengine_dmq_replicate_action(rtpengine_dmq_action_t action, str callid,
 int rtpengine_dmq_replicate_insert(
 		str callid, str viabranch, struct rtpengine_hash_entry *entry);
 int rtpengine_dmq_replicate_remove(str callid, str viabranch);
-int rtpengine_dmq_replicate_sync();
+int rtpengine_dmq_replicate_sync(dmq_node_t *node);
 #endif

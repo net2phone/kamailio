@@ -7,7 +7,7 @@
 #include "../../core/timer.h"
 
 
-static struct rtpengine_hash_table *rtpengine_hash_table;
+struct rtpengine_hash_table *rtpengine_hash_table;
 
 /* from sipwise rtpengine */
 static unsigned int str_hash(str s)
@@ -154,6 +154,11 @@ int rtpengine_hash_table_destroy()
 	}
 
 	return 1;
+}
+
+struct rtpengine_hash_table *rtpengine_hash_table_get()
+{
+	return rtpengine_hash_table;
 }
 
 int rtpengine_hash_table_insert(
