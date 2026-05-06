@@ -66,7 +66,7 @@ int rtpengine_dmq_init()
 	return 0;
 }
 
-int rtpengine_dmq_request_sync(dmq_node_t *node)
+int rtpengine_dmq_request_sync()
 {
 	srjson_doc_t jdoc;
 
